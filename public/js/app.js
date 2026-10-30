@@ -494,7 +494,8 @@ function forgetFace() {
   state.real = null;
   state.generated = {};
   state.generationError = null;
-  capture.stable = capture.usable = 0;
+  capture.stable = capture.usable = capture.motion = 0;
+  capture.last = null;
   mouths.clear();
   coach.skipped.clear();
 }
@@ -595,32 +596,65 @@ $('btn-regenerate').addEventListener('click', () => {
 });
 
 // Called every frame while we wait for a good, straight-on view of the face.
-const capture = { stable: 0, usable: 0, busy: false };
+const capture = { stable: 0, usable: 0, busy: false, last: null, motion: 0 };
+
+// The part of the camera image the stage shows (the video is scaled to cover the stage, so its edges
+// may be cut off), in normalized image coordinates.
+function visibleRegion() {
+  const vw = video.videoWidth, vh = video.videoHeight, sw = video.clientWidth, sh = video.clientHeight;
+  if (!vw || !vh || !sw || !sh) return { x0: 0, x1: 1, y0: 0, y1: 1 };
+  const va = vw / vh, sa = sw / sh;
+  if (va > sa) {
+    const f = sa / va;
+    return { x0: 0.5 - f / 2, x1: 0.5 + f / 2, y0: 0, y1: 1 };
+  }
+  const f = va / sa;
+  return { x0: 0, x1: 1, y0: 0.5 - f / 2, y1: 0.5 + f / 2 };
+}
 
 function autoCapture(result, p, dt) {
   const lm = result?.faceLandmarks?.[0];
   let hint = t('hint_frame');
   let good = false, usable = false;
   if (p && lm) {
-    const xs = lm.map((q) => q.x);
-    const width = Math.max(...xs) - Math.min(...xs);
-    if (width < 0.16) hint = t('hint_closer');
+    const xs = lm.map((q) => q.x), ys = lm.map((q) => q.y);
+    const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+    const faceW = maxX - minX, faceH = maxY - minY;
+    const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+    const v = visibleRegion();
+    const visW = v.x1 - v.x0, visH = v.y1 - v.y0;
+    // The whole head must be on screen (with room for the hair above the forehead) and near the middle.
+    const inside = minX - 0.12 * faceW >= v.x0 && maxX + 0.12 * faceW <= v.x1
+      && minY - 0.25 * faceH >= v.y0 && maxY + 0.05 * faceH <= v.y1;
+    const centered = Math.abs(cx - (v.x0 + v.x1) / 2) < visW * 0.2 && Math.abs(cy - (v.y0 + v.y1) / 2) < visH * 0.22;
+    // How fast the head moves, in face heights per second (smoothed).
+    if (capture.last) {
+      const speed = Math.hypot(cx - capture.last[0], cy - capture.last[1]) / faceH / Math.max(dt, 1 / 60);
+      capture.motion += (speed - capture.motion) * Math.min(1, dt * 8);
+    }
+    capture.last = [cx, cy];
+    if (faceH < 0.25 * visH) hint = t('hint_closer');
+    else if (faceH > 0.68 * visH) hint = t('hint_farther');
+    else if (!inside || !centered) hint = t('hint_frame');
     else if (Math.abs(p.yaw) > 0.25 || Math.abs(p.pitch) > 0.3 || Math.abs(p.roll) > 0.25) hint = t('hint_straight');
+    else if (capture.motion > 0.3) hint = t('hint_still');
     else {
       usable = true;
       if (p.jawOpen > 0.3) hint = t('hint_mouth');
       else if (p.blinkA > 0.5 || p.blinkB > 0.5) hint = t('hint_eyes');
       else good = true;
     }
+  } else {
+    capture.last = null;
   }
   capture.stable = good ? capture.stable + dt : 0;
-  // A straight-on face is good enough after a while, so nobody gets stuck (e.g. while smiling).
+  // A straight-on, well-framed face is good enough after a while, so nobody gets stuck (e.g. while smiling).
   capture.usable = usable ? capture.usable + dt : 0;
   if (capture.usable > 5) capture.stable = 2;
   if (good) hint = t('hint_hold');
   $('guide-text').textContent = hint;
   $('guide-oval').classList.toggle('good', good);
-  if (capture.stable > 1 && !capture.busy) {
+  if (capture.stable > 1.5 && !capture.busy) {
     capture.busy = true;
     capture.stable = capture.usable = 0;
     $('guide-text').textContent = t('hint_done');
