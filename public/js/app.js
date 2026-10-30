@@ -813,7 +813,7 @@ function frame(now) {
   smoothParams(live, target, dt, mouth ? 28 : 16);
 
   if (usesCharacter()) characters?.update(live, dt);
-  else if (faceAvatar?.ready) faceAvatar.update(live, dt, { relativePose: !tracked });
+  else if (faceAvatar?.ready) faceAvatar.update(live, dt, { relativePose: !tracked, mouthFromSpeech: !!mouth });
 
   requestAnimationFrame(frame);
 }

@@ -1,6 +1,6 @@
 // Animates a single portrait image (the user's photo, or the 3D character generated from it):
 // a triangle mesh over the face landmarks is warped to follow the webcam or the speech track.
-// The mouth is a hole in the mesh; a canvas behind the WebGL layer draws the inside of the mouth.
+// While the lips are apart, a canvas above the WebGL layer paints the inside of the mouth.
 import {
   LIP_UPPER_INNER, LIP_LOWER_INNER, LIP_UPPER_OUTER, LIP_LOWER_OUTER,
   MOUTH_CORNERS_OUTER, MOUTH_CORNERS_INNER, MOUTH_INNER_POLYGON,
@@ -36,15 +36,6 @@ function compile(gl, type, src) {
   gl.compileShader(s);
   if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
   return s;
-}
-
-function pointInPolygon(x, y, poly) {
-  let inside = false;
-  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-    const [xi, yi] = poly[i], [xj, yj] = poly[j];
-    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
-  }
-  return inside;
 }
 
 export class FaceAvatar {
@@ -141,21 +132,11 @@ export class FaceAvatar {
       }
     }
 
-    // Triangulate in 2D, then cut out the mouth so it can open.
+    // Triangulate in 2D. The mesh stays whole: the inside of the mouth is painted over it while the
+    // lips are apart, so a closed mouth looks exactly like the original image.
     const flat = new Float64Array(pts.length * 2);
     pts.forEach((p, i) => { flat[i * 2] = p[0]; flat[i * 2 + 1] = p[1]; });
-    const tri = new window.Delaunator(flat).triangles;
-    const upper = new Set(LIP_UPPER_INNER), lower = new Set(LIP_LOWER_INNER);
-    const mouthPoly = MOUTH_INNER_POLYGON.map((i) => P(i));
-    const indices = [];
-    for (let t = 0; t < tri.length; t += 3) {
-      const a = tri[t], b = tri[t + 1], c = tri[t + 2];
-      const vs = [a, b, c];
-      const spansGap = vs.some((v) => upper.has(v)) && vs.some((v) => lower.has(v));
-      const cx = (pts[a][0] + pts[b][0] + pts[c][0]) / 3, cy = (pts[a][1] + pts[b][1] + pts[c][1]) / 3;
-      if (spansGap || pointInPolygon(cx, cy, mouthPoly)) continue;
-      indices.push(a, b, c);
-    }
+    const indices = Array.from(new window.Delaunator(flat).triangles);
 
     // Per-vertex weights for each expression, computed once.
     const n = pts.length;
@@ -173,7 +154,7 @@ export class FaceAvatar {
       const [u, v] = local(pts[i]);
       if (lowerLip.has(i)) jaw[i] = 1 - 0.45 * Math.min(1, (u / (mouthW / 2)) ** 2);
       else if (corners.has(i)) jaw[i] = 0.45;
-      else if (upperLip.has(i)) jaw[i] = -0.06;
+      else if (upperLip.has(i)) jaw[i] = LIP_UPPER_INNER.includes(i) ? -0.12 : -0.05;
       else {
         let fv = smoothstep(0.02 * faceH, 0.12 * faceH, v);
         fv *= 1 - 0.85 * smoothstep(chinV, chinV + 0.35 * faceH, v);
@@ -216,6 +197,7 @@ export class FaceAvatar {
       restPose, mirrored, viewH, viewC,
       // An image with the mouth already open keeps its own teeth, attached to the upper lip.
       restOpen: dist(P(13), P(14)) > 0.06 * mouthW,
+      restGap: dist(P(13), P(14)) / dist(P(78), P(308)),
       positions: new Float32Array(n * 3),
     };
   }
@@ -239,11 +221,13 @@ export class FaceAvatar {
 
   // Deforms the rest mesh according to the params (all in photo pixel space).
   // With relativePose the head angles are offsets from the photo's own pose (idle/speech motion).
-  deform(p, relativePose) {
+  // With mouthFromSpeech the jaw opens from the image's own mouth instead of mirroring tracked openness.
+  deform(p, relativePose, mouthFromSpeech) {
     const f = this.face;
     const out = f.positions;
     const { ex, ey, mouthW, faceH } = f;
-    const jaw = Math.max(0, p.jawOpen - (f.restPose.jawOpen || 0)) * 0.55 * mouthW;
+    const jawRef = mouthFromSpeech ? 0 : f.restPose.jawOpen || 0;
+    const jaw = Math.max(0, p.jawOpen - jawRef) * 0.45 * mouthW;
     const smile = p.smile, wide = p.wide, pucker = p.pucker;
     const brow = p.browUp * 0.045 * faceH;
 
@@ -305,13 +289,13 @@ export class FaceAvatar {
     return out;
   }
 
-  update(rawParams, dt, { relativePose = false } = {}) {
+  update(rawParams, dt, { relativePose = false, mouthFromSpeech = false } = {}) {
     if (!this.face) return;
     this.resize();
     const f = this.face;
     // A mirrored image already behaves like a mirror; an un-mirrored one needs mirrored params.
     const p = f.mirrored ? rawParams : mirrorParams(rawParams);
-    const pos = this.deform(p, relativePose);
+    const pos = this.deform(p, relativePose, mouthFromSpeech);
 
     // Map photo pixels to clip space: show the head-and-shoulders region, always covering the canvas.
     const cw = this.glCanvas.width, ch = this.glCanvas.height;
@@ -347,96 +331,116 @@ export class FaceAvatar {
     this.drawMouth((i) => toCanvas(pos[i * 3], pos[i * 3 + 1]));
   }
 
-  // Mouth interior seen through the hole in the mesh.
+  // Paints the inside of the mouth over the face while the lips are apart (fading in as they part).
   drawMouth(pt) {
     const ctx = this.mctx;
+    const f = this.face;
     ctx.clearRect(0, 0, this.mouthCanvas.width, this.mouthCanvas.height);
-    const poly = MOUTH_INNER_POLYGON.map(pt);
     const top = pt(13), bottom = pt(14), left = pt(78), right = pt(308);
-    const open = Math.hypot(bottom[0] - top[0], bottom[1] - top[1]);
-    if (open < 0.5) return;
     const width = Math.hypot(right[0] - left[0], right[1] - left[1]);
+    const open = Math.hypot(bottom[0] - top[0], bottom[1] - top[1]);
+    if (width < 1) return;
+    const alpha = smoothstep(0.03, 0.1, open / width - f.restGap);
+    if (alpha <= 0) return;
+
+    const poly = MOUTH_INNER_POLYGON.map(pt);
     const angle = Math.atan2(right[1] - left[1], right[0] - left[0]);
     const mid = [(left[0] + right[0]) / 2, (left[1] + right[1]) / 2];
+    // Vertical position of a point in the mouth's own (rotated) frame.
+    const along = ([x, y]) => (x - mid[0]) * Math.sin(-angle) + (y - mid[1]) * Math.cos(-angle);
+    const topY = along(top), botY = along(bottom);
 
     ctx.save();
-    ctx.beginPath();
-    poly.forEach(([x, y], k) => (k ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
-    ctx.closePath();
-    // Stroke as well so no background shows at the lip edges.
-    ctx.lineWidth = 2;
-    ctx.fillStyle = '#2a0c10';
-    ctx.strokeStyle = '#2a0c10';
-    ctx.fill();
-    ctx.stroke();
-    ctx.clip();
+    ctx.globalAlpha = alpha;
+    const outline = new Path2D();
+    poly.forEach(([x, y], k) => (k ? outline.lineTo(x, y) : outline.moveTo(x, y)));
+    outline.closePath();
+    ctx.clip(outline);
 
+    ctx.save();
     ctx.translate(mid[0], mid[1]);
     ctx.rotate(angle);
-    const g = ctx.createRadialGradient(0, 0, 0, 0, 0, width * 0.6);
-    g.addColorStop(0, '#4a1219');
-    g.addColorStop(1, '#16050a');
-    ctx.fillStyle = g;
-    ctx.fillRect(-width, -width, width * 2, width * 2);
+    const depth = ctx.createRadialGradient(0, (topY + botY) / 2, 0, 0, (topY + botY) / 2, width * 0.6);
+    depth.addColorStop(0, '#3d1016');
+    depth.addColorStop(1, '#0f0204');
+    ctx.fillStyle = depth;
+    ctx.fillRect(-width, topY - width, width * 2, width * 2);
 
-    const rel = ([x, y]) => (x - mid[0]) * Math.sin(-angle) + (y - mid[1]) * Math.cos(-angle);
-    const topY = rel(top), botY = rel(bottom);
-    // Tongue, lower teeth, upper teeth.
-    ctx.fillStyle = '#a8454f';
+    // Tongue, low and towards the back.
+    const tongue = ctx.createLinearGradient(0, botY - open * 0.45, 0, botY);
+    tongue.addColorStop(0, '#5c1c26');
+    tongue.addColorStop(1, '#8e3a46');
+    ctx.fillStyle = tongue;
     ctx.beginPath();
-    ctx.ellipse(0, botY + open * 0.1, width * 0.3, open * 0.38, 0, 0, Math.PI * 2);
+    ctx.ellipse(0, botY + open * 0.05, width * 0.26, open * 0.32, 0, 0, Math.PI * 2);
     ctx.fill();
-    const toothH = Math.min(width * 0.12, open * 0.45);
-    if (!this.face.restOpen) {
-      const teeth = ctx.createLinearGradient(0, topY, 0, topY + toothH);
-      teeth.addColorStop(0, '#d9d2c8');
-      teeth.addColorStop(1, '#f4f0ea');
-      ctx.fillStyle = teeth;
-      ctx.fillRect(-width * 0.42, topY - 2, width * 0.84, toothH + 2);
-      ctx.strokeStyle = 'rgba(120,100,90,0.35)';
-      ctx.lineWidth = Math.max(1, width * 0.008);
-      for (let k = -3; k <= 3; k++) {
-        const x = k * width * 0.095;
-        ctx.beginPath();
-        ctx.moveTo(x, topY);
-        ctx.lineTo(x, topY + toothH);
-        ctx.stroke();
-      }
+
+    if (!f.restOpen) {
+      // Lower teeth peek out only when the mouth is wide open.
+      drawTeeth(ctx, width, botY, -1, 0.08 * width, 0.62);
+      drawTeeth(ctx, width, topY, 1, 0.21 * width, 1);
     }
-    ctx.fillStyle = 'rgba(225,218,208,0.55)';
-    ctx.fillRect(-width * 0.32, botY - Math.min(width * 0.05, open * 0.18), width * 0.64, width * 0.05);
+    // Corners and edges recede into shadow.
+    const sides = ctx.createLinearGradient(-width / 2, 0, width / 2, 0);
+    sides.addColorStop(0, 'rgba(12,2,4,0.85)');
+    sides.addColorStop(0.25, 'rgba(12,2,4,0)');
+    sides.addColorStop(0.75, 'rgba(12,2,4,0)');
+    sides.addColorStop(1, 'rgba(12,2,4,0.85)');
+    ctx.fillStyle = sides;
+    ctx.fillRect(-width, topY - width, width * 2, width * 2);
     ctx.restore();
-    if (this.face.restOpen) this.drawPhotoTeeth(ctx, pt, poly);
+
+    if (f.restOpen) this.drawPhotoTeeth(ctx, pt);
+    // Soft shadow just inside the lips.
+    ctx.strokeStyle = 'rgba(15,2,5,0.7)';
+    ctx.lineWidth = Math.max(2, width * 0.07);
+    ctx.filter = `blur(${Math.max(1, width * 0.02)}px)`;
+    ctx.stroke(outline);
+    ctx.restore();
   }
 
-  // Paints the image's own open mouth, following the upper lip (upper teeth sit on the upper jaw).
-  drawPhotoTeeth(ctx, pt, poly) {
+  // Paints the image's own open mouth, carried by the upper lip (upper teeth sit on the upper jaw).
+  // A similarity transform (no shear) keeps the teeth in shape while the lips move.
+  drawPhotoTeeth(ctx, pt) {
     const f = this.face;
-    const src = [78, 308, 13].map((i) => f.rest[i]);
-    const dst = [78, 308, 13].map(pt);
-    const [[x0, y0], [x1, y1], [x2, y2]] = src;
-    const det = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
-    if (Math.abs(det) < 1e-6) return;
-    // Affine map (photo px -> canvas px) through the two mouth corners and the upper lip centre.
-    const solve = (u0, u1, u2) => [
-      ((u1 - u0) * (y2 - y0) - (u2 - u0) * (y1 - y0)) / det,
-      ((u2 - u0) * (x1 - x0) - (u1 - u0) * (x2 - x0)) / det,
-    ];
-    const [a, c] = solve(dst[0][0], dst[1][0], dst[2][0]);
-    const [b, d] = solve(dst[0][1], dst[1][1], dst[2][1]);
-    const e = dst[0][0] - a * x0 - c * y0;
-    const g = dst[0][1] - b * x0 - d * y0;
+    const [r78, r308, r13] = [78, 308, 13].map((i) => f.rest[i]);
+    const [c78, c308, c13] = [78, 308, 13].map(pt);
+    const m = f.mirrored ? -1 : 1;
+    const rx = (r308[0] - r78[0]) * m, ry = r308[1] - r78[1];
+    const cx = c308[0] - c78[0], cy = c308[1] - c78[1];
+    const s = Math.hypot(cx, cy) / (Math.hypot(rx, ry) || 1);
+    const theta = Math.atan2(cy, cx) - Math.atan2(ry, rx);
+    const a = s * m * Math.cos(theta), b = s * m * Math.sin(theta);
+    const c = -s * Math.sin(theta), d = s * Math.cos(theta);
     ctx.save();
-    ctx.beginPath();
-    poly.forEach(([x, y], k) => (k ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
-    ctx.closePath();
-    ctx.clip();
-    ctx.setTransform(a, b, c, d, e, g);
+    ctx.setTransform(a, b, c, d, c13[0] - (a * r13[0] + c * r13[1]), c13[1] - (b * r13[0] + d * r13[1]));
     ctx.beginPath();
     MOUTH_INNER_POLYGON.forEach((i, k) => (k ? ctx.lineTo(f.rest[i][0], f.rest[i][1]) : ctx.moveTo(f.rest[i][0], f.rest[i][1])));
     ctx.closePath();
     ctx.clip();
     ctx.drawImage(this.source, 0, 0);
     ctx.restore();
+  }
+}
+
+// A row of teeth hanging from (dir = 1) or standing on (dir = -1) the lip at y, in the mouth's frame.
+function drawTeeth(ctx, width, y, dir, height, brightness) {
+  const count = 8;
+  const span = width * 0.86;
+  // Front teeth are wider than the ones towards the corners.
+  const weights = Array.from({ length: count }, (_, i) => 1.25 - Math.abs(i - (count - 1) / 2) * 0.12);
+  const total = weights.reduce((a, b) => a + b, 0);
+  let x = -span / 2;
+  for (const w of weights) {
+    const tw = (w / total) * span;
+    const th = height * (0.75 + 0.25 * (w / 1.25));
+    const g = ctx.createLinearGradient(0, y, 0, y + dir * th);
+    g.addColorStop(0, `rgba(${Math.round(225 * brightness)},${Math.round(218 * brightness)},${Math.round(206 * brightness)},1)`);
+    g.addColorStop(1, `rgba(${Math.round(250 * brightness)},${Math.round(247 * brightness)},${Math.round(240 * brightness)},1)`);
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.roundRect(x + tw * 0.04, dir > 0 ? y - th * 0.3 : y - th, tw * 0.92, th * 1.3, Math.min(tw, th) * 0.35);
+    ctx.fill();
+    x += tw;
   }
 }

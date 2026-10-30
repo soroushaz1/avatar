@@ -73,9 +73,10 @@ export function analyzeSpeech(buffer) {
   let jaw = 0;
   for (let f = 0; f < frames; f++) {
     const level = rms[f] / peak;
-    // Map loudness (dB relative to the loudest frame) to jaw opening.
+    // Map loudness (dB relative to the loudest frame) to jaw opening; the curve keeps most syllables
+    // moderately open and saves wide opening for the loudest vowels, as in natural speech.
     const db = 20 * Math.log10(level + 1e-6);
-    let target = Math.min(1, Math.max(0, (db + 32) / 30));
+    let target = Math.min(1, Math.max(0, (db + 30) / 30)) ** 1.5;
     const voiced = low[f] + mid[f];
     const fricative = high[f] / (voiced + high[f] + 1e-9); // s, sh, f: teeth together
     target *= 1 - 0.6 * fricative;
@@ -84,7 +85,7 @@ export function analyzeSpeech(buffer) {
     const ratio = mid[f] / (low[f] + 1e-9); // high F2 -> "ee" (wide), low F2 -> "oo" (rounded)
     const wide = Math.min(1, Math.max(0, (Math.log10(ratio + 1e-9) + 0.2) * 0.9)) * Math.min(1, jaw * 2.5);
     const pucker = Math.min(1, Math.max(0, (-Math.log10(ratio + 1e-9) - 0.5) * 0.8)) * Math.min(1, jaw * 2.5);
-    track[f] = { jawOpen: Math.min(1, jaw * 0.85), wide, pucker, energy: level };
+    track[f] = { jawOpen: Math.min(1, jaw * 0.7), wide, pucker, energy: level };
   }
   return track;
 }
