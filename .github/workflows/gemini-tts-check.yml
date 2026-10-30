@@ -1,0 +1,68 @@
+name: Gemini TTS check
+
+# Lists the speech (TTS) models available to the GEMINI_API_KEY secret and reads the Persian demo
+# sentence with a few female voices (well under $0.01). The samples are kept as a downloadable
+# artifact so they can be listened to. Prints only status information, never the key.
+on:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+    steps:
+      - name: List speech models
+        run: |
+          code=$(curl -s -o models.json -w '%{http_code}' -H "x-goog-api-key: $(echo "$GEMINI_API_KEY" | tr -d '[:space:]')" \
+            "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000")
+          echo "HTTP $code"
+          if [ "$code" != 200 ]; then jq -r '.error.message // .' models.json; exit 1; fi
+          echo "Speech models available to this key:"
+          jq -r '.models[] | select(.name | test("tts")) | "  \(.name | sub("models/"; "")) [\(.supportedGenerationMethods | join(","))]"' models.json
+          jq -r '[.models[] | select((.name | test("tts")) and (.supportedGenerationMethods | index("generateContent"))) | .name | sub("models/"; "")] | .[]' models.json > tts-models.txt
+          [ -s tts-models.txt ] || { echo "::error::No speech model is available to this key"; exit 1; }
+
+      - name: Read the Persian demo sentence with female voices
+        run: |
+          mkdir -p samples
+          text='سلام! من آواتار شما هستم. با اشتراک، هر متنی را که بنویسید با صدای طبیعی می‌خوانم و می‌توانید ویدیوی آن را دانلود کنید.'
+          for model in $(cat tts-models.txt); do
+            for voice in Leda Kore Aoede Zephyr; do
+              jq -n --arg t "$text" --arg v "$voice" \
+                '{contents:[{parts:[{text:$t}]}], generationConfig:{responseModalities:["AUDIO"],
+                  speechConfig:{voiceConfig:{prebuiltVoiceConfig:{voiceName:$v}}}}}' > req.json
+              start=$(date +%s)
+              code=$(curl -s -o out.json -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+                -H "x-goog-api-key: $(echo "$GEMINI_API_KEY" | tr -d '[:space:]')" \
+                -d @req.json "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent")
+              took=$(( $(date +%s) - start ))
+              if [ "$code" != 200 ]; then
+                echo "$model / $voice: HTTP $code $(jq -r '.error.message // empty' out.json | head -c 200)"
+                continue
+              fi
+              mime=$(jq -r '[.candidates[0].content.parts[] | select(.inlineData) | .inlineData.mimeType] | first // ""' out.json)
+              jq -r '[.candidates[0].content.parts[] | select(.inlineData) | .inlineData.data] | first // ""' out.json | base64 -d > pcm.raw
+              rate=$(echo "$mime" | grep -o 'rate=[0-9]*' | cut -d= -f2); rate=${rate:-24000}
+              python3 - "$rate" "samples/$model-$voice.wav" <<'EOF'
+          import sys, wave
+          rate, out = int(sys.argv[1]), sys.argv[2]
+          data = open('pcm.raw', 'rb').read()
+          with wave.open(out, 'wb') as w:
+              w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate); w.writeframes(data)
+          print(f'{len(data) / 2 / rate:.1f} s of audio')
+          EOF
+              echo "$model / $voice: $mime, took $took s"
+            done
+            # One model is enough when it works.
+            ls samples/*.wav >/dev/null 2>&1 && break
+          done
+
+      - name: Keep the samples
+        uses: actions/upload-artifact@v4
+        with:
+          name: gemini-tts-samples
+          path: samples/
+          if-no-files-found: ignore
+          retention-days: 7
