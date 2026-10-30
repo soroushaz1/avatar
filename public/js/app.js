@@ -1062,10 +1062,12 @@ async function makeVideo() {
   renderSpeaking('playing');
   toast(t('video_keep_open'), '', 5000);
   try {
+    // Let the (silent) sound run first, so the video has sound from its very first frame.
+    await wait(300);
     recorder.start(audio.stream);
     await wait(400);
     await speaker.play(speech, {
-      record: audio,
+      record: audio.node,
       onStart: (duration) => {
         if (withCaptions) recorder.captions = buildCaptions(text, speech.phonemes, duration);
       },
@@ -1077,6 +1079,7 @@ async function makeVideo() {
     console.error('Recording failed', err);
     toast(t('video_failed'), 'err');
   } finally {
+    audio.release();
     setRecording(null);
     setLoading(btn, false);
     renderSpeaking('idle');

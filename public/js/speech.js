@@ -199,8 +199,27 @@ export function unlockAudio() {
   if (c.state === 'suspended') c.resume();
 }
 
-// An audio output that can be recorded (for making videos).
-export const createRecordingDestination = () => ctx().createMediaStreamDestination();
+// An audio output that can be recorded (for making videos): { node, stream, release() }.
+// A silent source plays into it for the whole recording: while nothing plays into it, browsers send
+// no audio at all, so the recorded sound would start late and drift against the picture.
+export function createRecordingDestination() {
+  const c = ctx();
+  const node = c.createMediaStreamDestination();
+  const silence = c.createOscillator();
+  const mute = c.createGain();
+  mute.gain.value = 0;
+  silence.connect(mute).connect(node);
+  silence.start();
+  return {
+    node,
+    stream: node.stream,
+    release: () => {
+      silence.stop();
+      silence.disconnect();
+      mute.disconnect();
+    },
+  };
+}
 
 export class Speaker {
   constructor() {
@@ -219,7 +238,7 @@ export class Speaker {
 
   /**
    * Plays speech from the server ({ audio: base64, phonemes }) and resolves when it ends.
-   * @param record optional MediaStreamAudioDestinationNode that also receives the sound
+   * @param record optional MediaStreamAudioDestinationNode that also receives the sound (for a video)
    * @param onStart called with the duration when playback actually starts
    */
   async play({ audio, phonemes }, { record = null, onStart = null } = {}) {
@@ -233,7 +252,9 @@ export class Speaker {
     src.connect(c.destination);
     if (record) src.connect(record);
     const startAt = c.currentTime + 0.05;
-    const latency = (c.outputLatency || c.baseLatency || 0);
+    // The speakers play the sound a little late (a lot on some phones), so the mouth waits for it.
+    // A recording gets the sound without that delay, so then the mouth must not wait.
+    const latency = record ? 0 : c.outputLatency || c.baseLatency || 0;
     return new Promise((resolve) => {
       const handle = {
         stop: () => src.stop(),
