@@ -41,7 +41,7 @@ NODE=$(command -v node || true)
 [ -n "$NODE" ] || fail "Node.js is not installed"
 node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22||(a===22&&b>=13)?0:1)' \
   || fail "Node.js >= 22.13 is required (found $(node --version))"
-apt_install python3-venv curl
+apt_install python3-venv curl ffmpeg
 command -v certbot >/dev/null || apt_install certbot
 
 # A little swap keeps the voice model from starving other services on small (≤1 GB) servers.
@@ -110,6 +110,11 @@ if [ "$installed" != "$PIPER_VERSION" ]; then
   "$VENV/bin/pip" install -q --upgrade pip
   "$VENV/bin/pip" install -q "piper-tts==$PIPER_VERSION"
 fi
+# onnx lets Piper report phoneme timings, which drive the avatar's lip-sync.
+"$VENV/bin/python" -c 'import onnx' 2>/dev/null || {
+  log "Installing onnx (phoneme timings)"
+  "$VENV/bin/pip" install -q onnx
+}
 for voice in "${VOICES[@]}"; do
   if [ ! -f "$APP/shared/voices/$voice.onnx" ]; then
     log "Downloading voice $voice"

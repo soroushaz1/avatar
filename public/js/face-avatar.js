@@ -7,6 +7,7 @@ import {
   EYE_A, EYE_B, BROW_A, BROW_B, FACE_OVAL, FOREHEAD, CHIN, CHEEK_A, CHEEK_B, FACE_POINT_COUNT,
 } from './landmarks.js';
 import { mirrorParams } from './face-params.js';
+import { VISEME_FALLBACK } from './visemes.js';
 
 const smoothstep = (a, b, x) => {
   const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
@@ -132,8 +133,10 @@ export class FaceAvatar {
     this.tex = gl.createTexture();
     this.face = null;
     this.source = null;
-    // Real mouth frames of the user (see setMouthSamples), each with its own texture and mesh.
-    this.samples = [];
+    // One image per mouth shape (viseme id -> texture and mesh), see setMouthSamples.
+    this.samples = {};
+    // [width, height] to render at instead of the on-screen size (used while recording a video).
+    this.renderSize = null;
   }
 
   get ready() {
@@ -177,11 +180,27 @@ export class FaceAvatar {
     const ringN = FACE_OVAL.length;
     const headWeight = pts.map((_, i) => (i < FACE_POINT_COUNT ? 1 : i < FACE_POINT_COUNT + ringN ? 0.55 : i < FACE_POINT_COUNT + 2 * ringN ? 0.2 : 0));
 
-    // Triangulate in 2D. The mesh stays whole: the inside of the mouth is painted over it while the
-    // lips are apart, so a closed mouth looks exactly like the original image.
+    // Triangulate in 2D, with the lips pulled slightly apart so the mouth opening gets its own
+    // well-shaped triangles (they have no area while the mouth is closed). The mesh stays whole, so a
+    // closed mouth looks exactly like the original image.
     const flat = new Float64Array(pts.length * 2);
     pts.forEach((p, i) => { flat[i * 2] = p[0]; flat[i * 2 + 1] = p[1]; });
-    const indices = Array.from(new window.Delaunator(flat).triangles);
+    const lipMid = [(P(78)[0] + P(308)[0]) / 2, (P(78)[1] + P(308)[1]) / 2];
+    for (const i of LIP_LOWER_INNER) {
+      const u = ((pts[i][0] - lipMid[0]) * ex[0] + (pts[i][1] - lipMid[1]) * ex[1]) / (mouthW / 2);
+      const open = 0.15 * mouthW * Math.max(0.25, 1 - u * u);
+      flat[i * 2] += ey[0] * open;
+      flat[i * 2 + 1] += ey[1] * open;
+    }
+    const triangles = new window.Delaunator(flat).triangles;
+    // Triangles inside the mouth opening go last, so they can be drawn on their own.
+    const inner = new Set([...LIP_UPPER_INNER, ...LIP_LOWER_INNER, ...MOUTH_CORNERS_INNER]);
+    const outside = [], opening = [];
+    for (let k = 0; k < triangles.length; k += 3) {
+      const tri = [triangles[k], triangles[k + 1], triangles[k + 2]];
+      (tri.every((i) => inner.has(i)) ? opening : outside).push(...tri);
+    }
+    const indices = [...outside, ...opening];
 
     // Per-vertex weights for each expression, computed once.
     const n = pts.length;
@@ -241,31 +260,33 @@ export class FaceAvatar {
     const viewC = [center[0], Math.min(H - viewH / 2, Math.max(viewH / 2, center[1] + faceH * 0.35))];
 
     this.face = {
-      W, H, rest: pts, n, indices: indices.length, ex, ey, pivot, faceW, faceH, mouthW,
+      W, H, rest: pts, n, indices: indices.length, openingStart: outside.length, ex, ey, pivot, faceW, faceH, mouthW,
       headWeight, jaw, cornerA, cornerB, browA, browB, lipRound,
       restPose, mirrored, viewH, viewC,
       // An image with the mouth already open keeps its own teeth, attached to the upper lip.
       restOpen: dist(P(13), P(14)) > 0.06 * mouthW,
       restGap: dist(P(13), P(14)) / dist(P(78), P(308)),
+      mask,
+      morph: pts.map((p) => [...p]),
       positions: new Float32Array(n * 3),
       positionsB: new Float32Array(n * 3),
     };
-    for (const sm of this.samples) sm.aligned = null;
+    for (const sm of Object.values(this.samples)) sm.aligned = null;
   }
 
   /**
-   * Real frames of the user's mouth at different openings (from the webcam), used instead of a
-   * painted mouth when the realistic avatar speaks.
-   * @param samples [{ canvas, landmarks (normalized to the canvas), gap }]
+   * Images of the same face with the mouth in different shapes (visemes): real webcam frames for the
+   * realistic avatar, Gemini-made images for the 3D character. Used instead of a warped, painted mouth.
+   * @param samples { [visemeId]: { canvas, landmarks (normalized to the canvas) } }
    */
   setMouthSamples(samples) {
     const gl = this.gl;
-    for (const sm of this.samples) {
+    for (const sm of Object.values(this.samples)) {
       gl.deleteTexture(sm.tex);
       gl.deleteBuffer(sm.uvBuf);
     }
-    this.samples = samples.map((sample) => {
-      const { canvas, landmarks, gap } = sample;
+    this.samples = {};
+    for (const [id, { canvas, landmarks }] of Object.entries(samples)) {
       const W = canvas.width, H = canvas.height;
       const tex = gl.createTexture();
       gl.bindTexture(gl.TEXTURE_2D, tex);
@@ -280,18 +301,21 @@ export class FaceAvatar {
       const uvBuf = gl.createBuffer();
       gl.bindBuffer(gl.ARRAY_BUFFER, uvBuf);
       gl.bufferData(gl.ARRAY_BUFFER, uvs, gl.STATIC_DRAW);
-      return { tex, uvBuf, pts, gap, aligned: null };
-    }).sort((a, b) => a.gap - b.gap);
+      this.samples[id] = { tex, uvBuf, pts, aligned: null };
+    }
   }
 
-  // The two samples around the wanted lip gap and how far to blend from the first to the second.
-  pickSamples(gap) {
-    const list = this.samples;
-    if (gap <= list[0].gap) return [list[0], null, 0];
-    for (let i = 0; i < list.length - 1; i++) {
-      if (gap <= list[i + 1].gap) return [list[i], list[i + 1], (gap - list[i].gap) / (list[i + 1].gap - list[i].gap)];
+  get hasMouthSamples() {
+    return Object.keys(this.samples).length > 0;
+  }
+
+  // The image for a viseme, or the closest shape that exists; null means the closed-mouth portrait.
+  sampleFor(id) {
+    for (const candidate of [id, ...(VISEME_FALLBACK[id] || [])]) {
+      if (candidate === 'PP') return null;
+      if (this.samples[candidate]) return this.samples[candidate];
     }
-    return [list[list.length - 1], null, 0];
+    return null;
   }
 
   // A sample's mesh moved onto the portrait (stable landmarks matched), so only the mouth area differs.
@@ -316,7 +340,7 @@ export class FaceAvatar {
   resize() {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     for (const c of [this.glCanvas, this.mouthCanvas]) {
-      const w = Math.round(c.clientWidth * dpr), h = Math.round(c.clientHeight * dpr);
+      const [w, h] = this.renderSize || [Math.round(c.clientWidth * dpr), Math.round(c.clientHeight * dpr)];
       if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
     }
   }
@@ -391,16 +415,16 @@ export class FaceAvatar {
   }
 
   /**
-   * @param mouthGap when set and mouth samples exist, the mouth is shown from the real frame(s)
-   *   with this lip gap (gap / mouth width) instead of being warped and painted.
+   * @param visemes when set and mouth images exist, [[visemeId, weight], ...] (at most two): the mouth
+   *   is shown from those images, cross-faded over the closed-mouth portrait, instead of being warped.
    */
-  update(rawParams, dt, { relativePose = false, mouthFromSpeech = false, mouthGap = null } = {}) {
+  update(rawParams, dt, { relativePose = false, mouthFromSpeech = false, visemes = null } = {}) {
     if (!this.face) return;
     this.resize();
     const f = this.face;
     // A mirrored image already behaves like a mirror; an un-mirrored one needs mirrored params.
     const p = f.mirrored ? rawParams : mirrorParams(rawParams);
-    const fromSamples = mouthGap !== null && this.samples.length > 1;
+    const fromSamples = !!visemes && this.hasMouthSamples;
 
     // Map image pixels to clip space: show the head-and-shoulders region, always covering the canvas.
     const cw = this.glCanvas.width, ch = this.glCanvas.height;
@@ -424,7 +448,7 @@ export class FaceAvatar {
     gl.uniform1f(this.loc.uDepth, 1 / (f.faceW * 4));
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.idxBuf);
 
-    const draw = (positions, tex, uvBuf, alpha, feather) => {
+    const draw = (positions, tex, uvBuf, alpha, feather, first = 0, count = f.indices) => {
       gl.uniform1f(this.loc.uAlpha, alpha);
       gl.uniform1f(this.loc.uFeather, feather);
       gl.bindBuffer(gl.ARRAY_BUFFER, this.posBuf);
@@ -438,7 +462,7 @@ export class FaceAvatar {
       gl.enableVertexAttribArray(this.loc.aMask);
       gl.vertexAttribPointer(this.loc.aMask, 1, gl.FLOAT, false, 0, 0);
       gl.bindTexture(gl.TEXTURE_2D, tex);
-      gl.drawElements(gl.TRIANGLES, f.indices, gl.UNSIGNED_SHORT, 0);
+      gl.drawElements(gl.TRIANGLES, count, gl.UNSIGNED_SHORT, first * 2);
     };
 
     if (!fromSamples) {
@@ -449,20 +473,53 @@ export class FaceAvatar {
       return;
     }
 
-    // The mouth comes from real frames: the portrait underneath, then the matching frame(s) on top,
-    // all moved by the same head pose and blinks (the mouth itself is not warped).
+    // The mouth comes from the images. Morph: the mesh moves towards each image's own mouth by that
+    // image's weight and the images are cross-faded over the portrait on that same mesh, so the lips
+    // travel smoothly from shape to shape instead of one picture fading into another.
     this.mctx.clearRect(0, 0, this.mouthCanvas.width, this.mouthCanvas.height);
+    // Merge weights of visemes that resolve to the same image (or to the closed-mouth portrait).
+    const layers = [];
+    for (const [id, w] of visemes) {
+      const sm = this.sampleFor(id);
+      if (!sm || w <= 0) continue;
+      const same = layers.find((l) => l.sm === sm);
+      if (same) same.w += w;
+      else layers.push({ sm, w, mesh: this.alignedSample(sm) });
+    }
+    const { rest, morph, mask } = f;
+    for (let i = 0; i < f.n; i++) {
+      const r = rest[i], m = morph[i];
+      m[0] = r[0];
+      m[1] = r[1];
+      // Only the mouth and jaw move; small differences elsewhere (eyes, hair) are ignored.
+      if (mask[i] <= 0) continue;
+      for (const { mesh, w } of layers) {
+        m[0] += (mesh[i][0] - r[0]) * w * mask[i];
+        m[1] += (mesh[i][1] - r[1]) * w * mask[i];
+      }
+    }
     const still = { ...p, jawOpen: 0, smile: 0, wide: 0, pucker: 0 };
-    draw(this.deform(still, relativePose, true), this.tex, this.uvBuf, 1, 0);
-    const [a, b, t] = this.pickSamples(mouthGap);
+    const pos = this.deform(still, relativePose, true, morph, f.positionsB);
+    draw(pos, this.tex, this.uvBuf, 1, 0);
     gl.enable(gl.BLEND);
     // Blend colour only; the canvas itself must stay opaque or the page background shows through.
     gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
-    for (const [sm, alpha] of [[a, 1], [b, t]]) {
-      if (!sm || alpha < 0.02) continue;
+    // Drawn one after another, alphas are chosen so each layer ends up with its own weight.
+    let above = layers.reduce((sum, l) => sum + l.w, 0);
+    for (const { sm, w } of layers) {
+      const alpha = Math.min(1, w / Math.max(1e-6, 1 - (above - w)));
+      above -= w;
+      if (alpha < 0.02) continue;
       gl.clear(gl.DEPTH_BUFFER_BIT);
-      const pos = this.deform(still, relativePose, true, this.alignedSample(sm), f.positionsB);
       draw(pos, sm.tex, sm.uvBuf, alpha, 0.12);
+    }
+    // Inside the mouth opening the closed-mouth portrait has nothing to show (its lips would only be
+    // stretched there), so the opening shows the images alone, in proportion to their weights.
+    let sum = 0;
+    for (const { sm, w } of layers) {
+      sum += w;
+      gl.clear(gl.DEPTH_BUFFER_BIT);
+      draw(pos, sm.tex, sm.uvBuf, w / sum, 0.12, f.openingStart, f.indices - f.openingStart);
     }
     gl.disable(gl.BLEND);
   }

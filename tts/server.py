@@ -4,9 +4,14 @@ Only listens on localhost; the Node app proxies to it after checking the user's 
 
   GET  /voices                         -> [{"id", "lang", "name"}]
   POST /synthesize {"text","voice","speed"} -> audio/wav
+  POST /synthesize {"text","voice","speed","alignments":true}
+       -> {"wav": base64, "sample_rate": int, "phonemes": [[phoneme, num_samples], ...]}
+
+Phoneme timings let the browser shape the mouth for each sound (lips close on m/b/p, round on o/u...).
 """
 
 import argparse
+import base64
 import io
 import json
 import logging
@@ -56,7 +61,8 @@ class VoiceStore:
                 while len(self._loaded) >= self.max_loaded:
                     _LOGGER.info("Unloading voice %s", self._loaded.popitem(last=False)[0])
                 _LOGGER.info("Loading voice %s", voice_id)
-                self._loaded[voice_id] = PiperVoice.load(path)
+                # include_alignments patches the model in memory so phoneme durations are returned.
+                self._loaded[voice_id] = PiperVoice.load(path, include_alignments=True)
             self._loaded.move_to_end(voice_id)
             return self._loaded[voice_id]
 
@@ -89,6 +95,7 @@ def make_handler(store: VoiceStore, synth_lock: threading.Lock):
                 text = str(req.get("text", "")).strip()[:MAX_CHARS]
                 voice_id = str(req.get("voice", ""))
                 speed = float(req.get("speed", 1.0))
+                want_alignments = bool(req.get("alignments"))
             except (ValueError, TypeError):
                 return self._json(400, {"error": "bad request"})
             if not text:
@@ -102,8 +109,19 @@ def make_handler(store: VoiceStore, synth_lock: threading.Lock):
             buf = io.BytesIO()
             # One synthesis at a time keeps a small VPS responsive.
             with synth_lock, wave.open(buf, "wb") as wav:
-                voice.synthesize_wav(text, wav, syn_config=SynthesisConfig(length_scale=1.0 / speed))
-            self._send(200, buf.getvalue(), "audio/wav")
+                alignments = voice.synthesize_wav(
+                    text, wav, syn_config=SynthesisConfig(length_scale=1.0 / speed), include_alignments=want_alignments
+                )
+            if not want_alignments:
+                return self._send(200, buf.getvalue(), "audio/wav")
+            self._json(
+                200,
+                {
+                    "wav": base64.b64encode(buf.getvalue()).decode("ascii"),
+                    "sample_rate": voice.config.sample_rate,
+                    "phonemes": [[a.phoneme, int(a.num_samples)] for a in alignments or []],
+                },
+            )
 
         def log_message(self, fmt, *args):
             _LOGGER.debug(fmt, *args)

@@ -1,4 +1,8 @@
-// Plays synthesized speech and turns the audio into mouth movement (jawOpen / wide / pucker).
+import { VISEME_PARAMS, visemeOfPhoneme } from './visemes.js';
+
+// Plays synthesized speech and turns it into mouth movement (jawOpen / wide / pucker).
+// With phoneme timings from the voice engine each sound gets its own mouth shape (visemes): lips close
+// on m/b/p, round on o/u and widen on i/e. Without them the mouth follows loudness only.
 
 const HOP = 0.01; // analysis frame step in seconds
 
@@ -90,6 +94,81 @@ export function analyzeSpeech(buffer) {
   return track;
 }
 
+const smooth = (u) => u * u * (3 - 2 * u);
+
+// Keyframes (time, viseme, strength) from [phoneme, start, duration] triples, plus stressed-syllable times.
+function visemeTrack(phonemes) {
+  const sounds = [];
+  const stresses = [];
+  let prev = null;
+  for (const [ph, start, dur] of phonemes) {
+    if (ph === 'ˈ' || ph === 'ˌ') {
+      if (ph === 'ˈ') stresses.push(start + dur);
+      continue;
+    }
+    let v = ph === 'ː' ? prev : visemeOfPhoneme(ph);
+    if (ph === ' ' && dur > 0.15) v = ['rest', 1, 'c']; // a real pause between words
+    if (!v) continue;
+    sounds.push({ id: v[0], s: v[1], kind: v[2], start, dur });
+    prev = v;
+  }
+
+  const keys = [{ t: 0, id: 'PP', s: 1 }];
+  sounds.forEach((snd, i) => {
+    let { id, s } = snd;
+    const { kind, start, dur } = snd;
+    if (kind === 'w') {
+      // Coarticulation: during t, k, h... the lips already take the shape of the next vowel.
+      const next = sounds.slice(i + 1, i + 3).find((n) => n.kind === 'v' && n.start - (start + dur) < 0.12);
+      if (next) [id, s] = [next.id, next.s * 0.6];
+    } else if (kind === 'v') {
+      // Short vowels don't reach the full shape (undershoot), as in natural fast speech.
+      s *= Math.min(1, 0.4 + dur / 0.12);
+    }
+    if (id === 'rest' || id === 'PP') {
+      // Hold closed lips for most of the sound so the closure is actually visible.
+      keys.push({ t: start + dur * 0.25, id: 'PP', s: 1 }, { t: start + dur * 0.75, id: 'PP', s: 1 });
+    } else if (dur > 0.18) {
+      // Long sounds hold their shape instead of passing through it.
+      keys.push({ t: start + dur * 0.3, id, s }, { t: start + dur * 0.75, id, s });
+    } else {
+      keys.push({ t: start + dur / 2, id, s });
+    }
+  });
+  const last = phonemes[phonemes.length - 1];
+  keys.push({ t: (last ? last[1] + last[2] : 0) + 0.05, id: 'PP', s: 1 });
+  keys.sort((x, y) => x.t - y.t);
+  return { keys, stresses };
+}
+
+// Mouth parameters of a viseme at a given strength (0 = closed and relaxed).
+function paramsOf(id, s) {
+  const pp = VISEME_PARAMS.PP, v = VISEME_PARAMS[id] || pp;
+  return { jawOpen: pp.jawOpen + (v.jawOpen - pp.jawOpen) * s, wide: pp.wide + (v.wide - pp.wide) * s, pucker: pp.pucker + (v.pucker - pp.pucker) * s };
+}
+
+// The mouth at time t: the two visemes being blended (with weights) and equivalent mouth parameters.
+function sampleTrack({ keys, stresses }, t, intensity) {
+  let i = 0;
+  while (i < keys.length - 1 && keys[i + 1].t <= t) i++;
+  const a = keys[i], b = keys[Math.min(i + 1, keys.length - 1)];
+  const u = b.t > a.t ? smooth(Math.min(1, Math.max(0, (t - a.t) / (b.t - a.t)))) : 0;
+  const pa = paramsOf(a.id, a.s * intensity), pb = paramsOf(b.id, b.s * intensity);
+  const m = {
+    jawOpen: pa.jawOpen + (pb.jawOpen - pa.jawOpen) * u,
+    wide: pa.wide + (pb.wide - pa.wide) * u,
+    pucker: pa.pucker + (pb.pucker - pa.pucker) * u,
+    visemes: [[a.id, a.s * intensity * (1 - u)], [b.id, b.s * intensity * u]],
+  };
+  // A small nod and brow lift on stressed syllables keeps the head alive while talking.
+  let nod = 0;
+  for (const st of stresses) nod += Math.exp(-(((t - st - 0.06) / 0.12) ** 2));
+  m.nod = Math.min(1, nod);
+  return m;
+}
+
+const base64ToBuffer = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)).buffer;
+
 let audioCtx = null;
 const ctx = () => (audioCtx ??= new (window.AudioContext || window.webkitAudioContext)());
 
@@ -98,6 +177,9 @@ export function unlockAudio() {
   const c = ctx();
   if (c.state === 'suspended') c.resume();
 }
+
+// An audio output that can be recorded (for making videos).
+export const createRecordingDestination = () => ctx().createMediaStreamDestination();
 
 export class Speaker {
   constructor() {
@@ -114,25 +196,37 @@ export class Speaker {
     this.current = null;
   }
 
-  // Plays a WAV/MP3 ArrayBuffer and resolves when playback ends.
-  async playAudio(arrayBuffer) {
+  /**
+   * Plays speech from the server ({ audio: base64, phonemes }) and resolves when it ends.
+   * @param record optional MediaStreamAudioDestinationNode that also receives the sound
+   * @param onStart called with the duration when playback actually starts
+   */
+  async play({ audio, phonemes }, { record = null, onStart = null } = {}) {
     this.stop();
     const c = ctx();
-    const buffer = await c.decodeAudioData(arrayBuffer);
-    const track = analyzeSpeech(buffer);
+    const buffer = await c.decodeAudioData(base64ToBuffer(audio));
+    const loudness = analyzeSpeech(buffer);
+    const track = phonemes?.length ? visemeTrack(phonemes) : null;
     const src = c.createBufferSource();
     src.buffer = buffer;
     src.connect(c.destination);
+    if (record) src.connect(record);
     const startAt = c.currentTime + 0.05;
     const latency = (c.outputLatency || c.baseLatency || 0);
     return new Promise((resolve) => {
       const handle = {
         stop: () => src.stop(),
+        elapsed: () => c.currentTime - startAt,
         mouth: () => {
           // Lead the audio slightly: lips move just before the sound is heard.
-          const t = c.currentTime - startAt - latency + 0.04;
+          const t = c.currentTime - startAt - latency + 0.05;
           if (t < 0) return null;
-          return track[Math.min(track.length - 1, Math.floor(t / HOP))];
+          const loud = loudness[Math.min(loudness.length - 1, Math.floor(t / HOP))];
+          if (!track) return loud;
+          // Louder syllables are articulated fully, quieter ones a little less.
+          const m = sampleTrack(track, t, Math.min(1, 0.72 + 0.4 * Math.min(1, loud.energy * 1.4)));
+          m.energy = loud.energy;
+          return m;
         },
       };
       src.onended = () => {
@@ -141,6 +235,7 @@ export class Speaker {
       };
       this.current = handle;
       src.start(startAt);
+      onStart?.(buffer.duration);
     });
   }
 
@@ -181,6 +276,11 @@ export class Speaker {
 
   mouth() {
     return this.current?.mouth() ?? null;
+  }
+
+  // Seconds since the current speech started (null when nothing is playing).
+  elapsed() {
+    return this.current?.elapsed?.() ?? null;
   }
 }
 

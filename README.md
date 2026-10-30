@@ -5,10 +5,22 @@ Visitors turn on their webcam and see their avatar come alive:
 - **Fantasy avatar**: a 3D animated character generated from the visitor's own photo with Google Gemini
   (styles: 3D Animated, Fantasy Elf, Superhero, Anime). Ready-made characters (fox, robot, alien, bear)
   are available for people who don't want to use their face.
-- **Realistic avatar**: the visitor's own photo, animated.
+- **Realistic avatar**: the live camera; when it reads text, the visitor's own photo with real frames of their
+  mouth (recorded once with an on-screen guide, one per mouth shape).
 
 Both follow the visitor's head, eyes and mouth in real time. Subscribers can type text and the avatar reads it
-aloud with lip-sync (Piper text-to-speech, English and Persian voices). Subscriptions are paid through ZarinPal.
+aloud with lip-sync (Piper text-to-speech, English and Persian voices), and download it as a video (portrait,
+square or landscape, with optional subtitles). Everyone can hear a free demo sentence. Subscriptions are paid
+through ZarinPal.
+
+### Lip-sync
+
+Every sound maps to one of nine mouth shapes (visemes, `public/js/visemes.js`): closed lips (m/b/p), f/v, s/t,
+"e", "a", "ɑ/آ", "i", "o" and "u". Piper reports when each phoneme is spoken; the browser turns that into a
+track of mouth shapes with coarticulation (lips anticipate the next vowel) and undershoot on short vowels
+(`public/js/speech.js`). The avatar keeps one image per shape (Gemini-made for 3D characters, webcam frames for
+the realistic avatar) and morphs between them: the mesh moves towards each image's mouth by its weight while the
+images cross-fade (`public/js/face-avatar.js`).
 
 ## How it works
 
@@ -17,12 +29,13 @@ aloud with lip-sync (Piper text-to-speech, English and Persian voices). Subscrip
 | Face tracking | Browser (MediaPipe Face Landmarker) | Video never leaves the browser |
 | Avatar animation | Browser (WebGL mesh warp, three.js for ready-made characters) | `public/js/face-avatar.js`, `public/js/fantasy.js` |
 | 3D character | Server → Google Gemini | Photo sent once, after the visitor agrees; `server/avatar.js` |
-| Text to speech | Server (`tts/server.py`, Piper) | Subscribers only; lip-sync is computed from the audio in the browser |
+| Text to speech | Server (`tts/server.py`, Piper + ffmpeg) | Subscribers only (plus a demo sentence); returns MP3 and phoneme timings |
+| Video | Browser (canvas + MediaRecorder) | MP4 where the browser supports it, otherwise WebM; `public/js/recorder.js` |
 | Accounts, payments | Server (Express + SQLite) | `server/auth.js`, `server/payment.js` |
 
 ## Local development
 
-Requires Node.js 22.13+ (and Python 3 with `pip install piper-tts` for speech).
+Requires Node.js 22.13+ (and Python 3 with `pip install piper-tts onnx`, plus ffmpeg, for speech).
 
 ```bash
 npm install
@@ -33,7 +46,7 @@ npm run dev
 Voice service (optional locally):
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install piper-tts==1.8.0
+python3 -m venv .venv && .venv/bin/pip install piper-tts==1.8.0 onnx
 .venv/bin/python -m piper.download_voices --download-dir tts/voices en_US-amy-medium
 .venv/bin/python tts/server.py --voices-dir tts/voices
 ```

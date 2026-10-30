@@ -2,9 +2,11 @@ import { api } from './api.js';
 import { FaceTracker, detectImage, loadFaceAssets } from './tracker.js';
 import { createParams, paramsFromResult, smoothParams, IdleAnimator } from './face-params.js';
 import { FaceAvatar } from './face-avatar.js';
-import { Speaker, unlockAudio, detectLang } from './speech.js';
-import { MouthSamples, BIN_COUNT, lipGap, sampleFromImage, saveSampleList, loadSampleList } from './mouth-samples.js';
-import { t, lang, setLanguage, applyLanguage, formatNumber, formatDate } from './i18n.js';
+import { Speaker, unlockAudio, detectLang, createRecordingDestination } from './speech.js';
+import { MouthSamples, saveSampleSet, loadSampleSet } from './mouth-samples.js';
+import { VISEME_IDS, visemeOfBlendshapes, visemeStrength } from './visemes.js';
+import { VideoRecorder, buildCaptions, canRecordVideo } from './recorder.js';
+import { t, lang, setLanguage, applyLanguage, formatNumber, formatDate, formatDuration } from './i18n.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -48,7 +50,6 @@ const state = {
   faceVisible: false,
   cameraError: null,
   modelProgress: 0,
-  liveGap: 0,
   modelError: false,
   // Portraits the avatar can animate: the user's photo and the characters generated from it.
   real: null,
@@ -57,6 +58,8 @@ const state = {
   generationError: null,
   afterLogin: null,
   authTab: 'login',
+  // While a video is being recorded: { recorder, cancelled }.
+  recording: null,
 };
 
 const video = $('video');
@@ -230,7 +233,7 @@ function syncPortrait() {
 // In realistic mode, while the camera sees the user and the avatar isn't reading text, the
 // realistic avatar is simply the live camera: a real face needs no drawn mouth.
 const showsLiveCamera = () => state.mode === 'realistic' && !!state.real && tracker.cameraOn && tracker.ready
-  && state.faceVisible && !speaker.speaking;
+  && state.faceVisible && !speaker.speaking && !state.recording;
 let liveCameraShown = false;
 
 function renderStage() {
@@ -241,6 +244,8 @@ function renderStage() {
   const live = (capturing && tracker.cameraOn && !!faceAvatar) || liveCameraShown;
 
   $('stage').dataset.mode = state.mode;
+  $('stage').classList.toggle('recording', !!state.recording);
+  $('rec-badge').hidden = !state.recording;
   $('char-canvas').hidden = !charMode;
   for (const id of ['face-canvas', 'mouth-canvas']) $(id).hidden = charMode || !faceAvatar?.ready || liveCameraShown;
   video.hidden = !tracker.cameraOn || (!live && !state.showPreview);
@@ -262,22 +267,61 @@ function renderStage() {
   renderCamera();
 }
 
-// Asks the user to read a sentence aloud until enough real mouth frames are collected.
+// The realistic avatar talks with real frames of the user's mouth, one per mouth shape (viseme).
+// The coach asks for the shapes one at a time; shapes seen while the user talks are kept as well.
+const COACH_ORDER = ['AW', 'AA', 'E', 'I', 'O', 'U', 'FF', 'SS'];
+const coach = { target: null, since: 0, held: 0, skipped: new Set() };
+const nextCoachTarget = () => COACH_ORDER.find((id) => !mouths.set[id] && !coach.skipped.has(id)) || null;
+const coachActive = () => state.mode === 'realistic' && !!state.real && tracker.cameraOn && tracker.ready
+  && !speaker.speaking && !state.recording && !!nextCoachTarget();
+
 let mouthsWereReady = false;
 function renderCoach() {
-  const show = state.mode === 'realistic' && !!state.real && tracker.cameraOn && tracker.ready && !mouths.ready;
+  const show = coachActive();
   $('coach').hidden = !show;
-  if (show) $('coach-text').textContent = t('coach_read', { n: formatNumber(mouths.count), total: formatNumber(BIN_COUNT) });
+  if (show) {
+    const want = nextCoachTarget();
+    $('coach-title').textContent = t('coach_title', { n: formatNumber(mouths.count), total: formatNumber(VISEME_IDS.length) });
+    $('coach-text').textContent = t('coach_say', { sound: t(`viseme_${want}`) });
+    $('coach-dots').replaceChildren(...COACH_ORDER.map((id) => {
+      const dot = document.createElement('span');
+      dot.className = mouths.set[id] ? 'done' : id === want ? 'now' : '';
+      return dot;
+    }));
+  }
   if (mouths.ready && !mouthsWereReady && state.mode === 'realistic') toast(t('samples_ready'), 'ok', 6000);
   mouthsWereReady = mouths.ready;
 }
 
 let mouthsSaveTimer = null;
-let mouthsApplied = -1;
+let mouthsApplied = null;
 function onMouthSamplesChanged() {
   clearTimeout(mouthsSaveTimer);
   mouthsSaveTimer = setTimeout(() => mouths.save(), 3000);
   renderCoach();
+}
+
+function collectMouthSamples(landmarks, shapes, p, now, dt) {
+  const id = visemeOfBlendshapes(shapes);
+  let changed = false;
+  if (coachActive()) {
+    const want = nextCoachTarget();
+    if (want !== coach.target) {
+      Object.assign(coach, { target: want, since: now, held: 0 });
+      renderCoach();
+    }
+    // A frame counts when it is recognized as the requested shape or, after a moment, when the user
+    // clearly holds some open shape (people form sounds differently).
+    coach.held = id ? coach.held + dt : 0;
+    if (id === want || (now - coach.since > 2500 && coach.held > 0.6)) {
+      changed = mouths.offer(video, landmarks, shapes, p, now, want);
+    } else if (now - coach.since > 12000) {
+      coach.skipped.add(want); // a similar shape stands in for it
+      renderCoach();
+    }
+  }
+  if (!changed && id) changed = mouths.offer(video, landmarks, shapes, p, now);
+  if (changed) onMouthSamplesChanged();
 }
 
 function renderOverlay(capturing) {
@@ -397,7 +441,8 @@ async function loadStyles() {
 // ---------- portraits: capture, upload, generation, persistence ----------
 const REAL_KEY = 'avatar.face';
 const charKey = (style) => `avatar.character.${style}`;
-const charMouthsKey = (style) => `avatar.character.${style}.mouths`;
+const charVisemesKey = (style) => `avatar.character.${style}.visemes`;
+const oldCharMouthsKey = (style) => `avatar.character.${style}.mouths`;
 
 // Detects the face in an image and returns everything the avatar needs to animate it.
 async function makePortrait(canvas, mirrored) {
@@ -443,13 +488,15 @@ function forgetFace() {
   store.remove(REAL_KEY);
   for (const s of state.styles) {
     store.remove(charKey(s.id));
-    store.remove(charMouthsKey(s.id));
+    store.remove(charVisemesKey(s.id));
+    store.remove(oldCharMouthsKey(s.id));
   }
   state.real = null;
   state.generated = {};
   state.generationError = null;
   capture.stable = capture.usable = 0;
   mouths.clear();
+  coach.skipped.clear();
 }
 
 async function useNewPhoto(canvas, mirrored) {
@@ -491,10 +538,10 @@ async function generateCharacter(style) {
   state.generationError = null;
   renderStage();
   try {
-    const { image, mouths } = await api.generateAvatar(portraitCrop(state.real), style);
+    const { image, visemes } = await api.generateAvatar(portraitCrop(state.real), style);
     const portrait = await makePortrait(imageToCanvas(await loadImage(image)), state.real.mirrored);
     if (!portrait) throw new Error(t('no_face_generated'));
-    await attachCharacterMouths(style, portrait, mouths);
+    await attachCharacterVisemes(style, portrait, visemes);
     state.generated[style] = portrait;
     savePortrait(charKey(style), portrait);
     if (state.look === style) toast(t('character_ready'), 'ok');
@@ -508,31 +555,33 @@ async function generateCharacter(style) {
   }
 }
 
-// The character's mouth-open images become mouth samples (with the closed-mouth character itself).
-async function attachCharacterMouths(style, portrait, images) {
-  const samples = [sampleFromImage(portrait.canvas, portrait.landmarks)];
-  for (const src of images || []) {
+// The character's images with the mouth in each shape (viseme) let it talk with a natural mouth.
+async function attachCharacterVisemes(style, portrait, images) {
+  const set = {};
+  await Promise.all((images || []).map(async ({ id, image }) => {
+    if (!VISEME_IDS.includes(id)) return;
     try {
-      const canvas = imageToCanvas(await loadImage(src));
+      const canvas = imageToCanvas(await loadImage(image));
       const landmarks = (await detectImage(canvas)).faceLandmarks?.[0];
-      if (landmarks) samples.push(sampleFromImage(canvas, landmarks.slice(0, 468)));
+      if (landmarks) set[id] = { canvas, landmarks: landmarks.slice(0, 468).map((q) => ({ x: q.x, y: q.y, z: q.z })) };
     } catch (err) {
       console.warn('Mouth image skipped', err);
     }
-  }
-  portrait.mouths = samples;
-  saveSampleList(charMouthsKey(style), samples.slice(1));
+  }));
+  portrait.visemes = set;
+  saveSampleSet(charVisemesKey(style), set);
+  store.remove(oldCharMouthsKey(style));
 }
 
-// Characters made before mouth images existed get them once, in the background.
+// Characters made before every mouth shape existed get them once, in the background.
 const mouthsRequested = new Set();
 async function ensureCharacterMouths(style) {
   const portrait = state.generated[style];
-  if (!portrait || portrait.mouths?.length > 1 || mouthsRequested.has(style) || !state.generationAvailable) return;
+  if (!portrait || mouthsRequested.has(style) || !state.generationAvailable) return;
   mouthsRequested.add(style);
   try {
-    const { mouths } = await api.avatarMouths(portrait.canvas.toDataURL('image/jpeg', 0.9));
-    await attachCharacterMouths(style, portrait, mouths);
+    const { visemes } = await api.avatarMouths(portrait.canvas.toDataURL('image/jpeg', 0.9));
+    await attachCharacterVisemes(style, portrait, visemes);
   } catch (err) {
     console.warn('Mouth images unavailable', err);
   }
@@ -541,7 +590,7 @@ async function ensureCharacterMouths(style) {
 $('btn-regenerate').addEventListener('click', () => {
   delete state.generated[state.look];
   store.remove(charKey(state.look));
-  store.remove(charMouthsKey(state.look));
+  store.remove(charVisemesKey(state.look));
   renderStage();
 });
 
@@ -622,7 +671,7 @@ async function restorePortraits() {
   for (const s of state.styles) {
     const p = await loadPortrait(charKey(s.id));
     if (!p) continue;
-    p.mouths = [sampleFromImage(p.canvas, p.landmarks), ...(await loadSampleList(charMouthsKey(s.id)))];
+    p.visemes = await loadSampleSet(charVisemesKey(s.id));
     state.generated[s.id] = p;
   }
 }
@@ -807,52 +856,211 @@ function renderSpeaking(phase) {
   setLoading($('btn-speak'), phase === 'loading');
   $('btn-speak').hidden = phase === 'playing';
   $('btn-stop').hidden = phase !== 'playing';
+  $('btn-video').disabled = phase !== 'idle';
 }
+
+// Whether the avatar can talk right now; otherwise tells the user what is missing.
+function avatarCanTalk() {
+  if (!usesCharacter() && !faceAvatar?.ready) {
+    toast(t('create_avatar_first'));
+    return false;
+  }
+  if (state.mode === 'realistic' && !mouths.ready && !state.cameraError) {
+    // Without a camera at all, the realistic avatar falls back to a drawn mouth.
+    renderCoach();
+    toast(t(tracker.cameraOn ? 'need_samples' : 'need_samples_camera'), '', 7000);
+    return false;
+  }
+  return true;
+}
+
+// Sends visitors without a subscription to log in or subscribe; returns true when it did.
+function needsSubscription(retry) {
+  if (!state.user) {
+    openAuth('login', () => (state.user.subscribed ? retry() : openPlans()));
+    return true;
+  }
+  if (!state.user.subscribed) {
+    openPlans();
+    return true;
+  }
+  return false;
+}
+
+function handleSpeechError(err, retry) {
+  if (err.status === 401) {
+    state.user = null;
+    renderAccount();
+    openAuth('login', retry);
+  } else if (err.status === 402) {
+    refreshMe().then(openPlans);
+  } else {
+    toast(err.message, 'err');
+  }
+}
+
+const fetchSpeech = (text) => api.tts(text, pickVoice(text), Number($('speed').value));
 
 async function speak() {
   const text = textArea.value.trim();
   if (!text) return toast(t('type_first'));
-  if (!state.user) return openAuth('login', () => (state.user.subscribed ? speak() : openPlans()));
-  if (!state.user.subscribed) return openPlans();
-  if (!usesCharacter() && !faceAvatar?.ready) return toast(t('create_avatar_first'));
-  if (state.mode === 'realistic' && !mouths.ready && !state.cameraError) {
-    // Without a camera at all, the realistic avatar falls back to a painted mouth.
-    renderCoach();
-    return toast(t(tracker.cameraOn ? 'need_samples' : 'need_samples_camera'), '', 7000);
-  }
+  if (needsSubscription(speak) || !avatarCanTalk()) return;
   unlockAudio();
   renderSpeaking('loading');
   try {
-    const audio = await api.tts(text, pickVoice(text), Number($('speed').value));
+    const speech = await fetchSpeech(text);
     renderSpeaking('playing');
-    await speaker.playAudio(audio);
+    await speaker.play(speech);
   } catch (err) {
     if (err.status === 503) {
       toast(t('voice_fallback'), '', 6000);
       renderSpeaking('playing');
       await speaker.speakWithBrowser(text, detectLang(text)).catch(() => toast(t('audio_failed'), 'err'));
-    } else if (err.status === 401) {
-      state.user = null;
-      renderAccount();
-      openAuth('login');
-    } else if (err.status === 402) {
-      await refreshMe();
-      openPlans();
     } else {
-      toast(err.message, 'err');
+      handleSpeechError(err, speak);
     }
   } finally {
     renderSpeaking('idle');
   }
 }
 
+// A fixed sentence anyone can hear, to try the talking avatar before subscribing.
+async function playDemo() {
+  if (!avatarCanTalk()) return;
+  unlockAudio();
+  const btn = $('btn-demo');
+  setLoading(btn, true);
+  try {
+    const voice = state.voices.find((v) => v.lang === lang)?.id || '';
+    const speech = await api.ttsDemo(lang, voice);
+    setLoading(btn, false);
+    renderSpeaking('playing');
+    await speaker.play(speech);
+  } catch (err) {
+    toast(err.status === 503 ? t('voice_down') : err.message, 'err');
+  } finally {
+    setLoading(btn, false);
+    renderSpeaking('idle');
+  }
+}
+
 $('btn-speak').addEventListener('click', speak);
-$('btn-stop').addEventListener('click', () => speaker.stop());
+$('btn-demo').addEventListener('click', playDemo);
+$('btn-stop').addEventListener('click', () => {
+  if (state.recording) state.recording.cancelled = true;
+  speaker.stop();
+});
+
+// ---------- video ----------
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const recordLayers = () => (usesCharacter() ? [$('char-canvas')] : [$('face-canvas'), $('mouth-canvas')]);
+
+let recTimer = null;
+function setRecording(recorder) {
+  state.recording = recorder && { recorder, cancelled: false, started: performance.now() };
+  // Render the avatar at the video's size (the stage shows it letterboxed meanwhile).
+  const size = recorder ? recorder.avatarSize : null;
+  if (faceAvatar) faceAvatar.renderSize = size;
+  if (characters) characters.renderSize = size;
+  clearInterval(recTimer);
+  const tick = () => {
+    const secs = Math.floor((performance.now() - state.recording.started) / 1000);
+    $('rec-text').textContent = t('recording', { time: formatDuration(secs) });
+  };
+  if (recorder) {
+    tick();
+    recTimer = setInterval(tick, 500);
+  }
+  renderStage();
+}
+
+async function makeVideo() {
+  const text = textArea.value.trim();
+  if (!text) return toast(t('type_first'));
+  if (needsSubscription(makeVideo) || !avatarCanTalk()) return;
+  if (!canRecordVideo()) return toast(t('video_unsupported'), 'err', 8000);
+  unlockAudio();
+  speaker.stop();
+  const btn = $('btn-video');
+  setLoading(btn, true);
+  let speech;
+  try {
+    speech = await fetchSpeech(text);
+  } catch (err) {
+    setLoading(btn, false);
+    if (err.status === 503) return toast(t('voice_down'), 'err', 7000);
+    return handleSpeechError(err, makeVideo);
+  }
+  await document.fonts?.load('700 40px Vazirmatn').catch(() => {});
+  const withCaptions = $('video-captions').checked;
+  const recorder = new VideoRecorder($('video-format').value, { rtl: detectLang(text) === 'fa' });
+  const audio = createRecordingDestination();
+  setRecording(recorder);
+  renderSpeaking('playing');
+  toast(t('video_keep_open'), '', 5000);
+  try {
+    recorder.start(audio.stream);
+    await wait(400);
+    await speaker.play(speech, {
+      record: audio,
+      onStart: (duration) => {
+        if (withCaptions) recorder.captions = buildCaptions(text, speech.phonemes, duration);
+      },
+    });
+    await wait(600);
+    const blob = await recorder.stop();
+    if (!state.recording.cancelled) showVideo(blob, recorder.extension);
+  } catch (err) {
+    console.error('Recording failed', err);
+    toast(t('video_failed'), 'err');
+  } finally {
+    setRecording(null);
+    setLoading(btn, false);
+    renderSpeaking('idle');
+  }
+}
+
+$('btn-video').addEventListener('click', makeVideo);
+
+let videoUrl = null;
+function showVideo(blob, extension) {
+  if (videoUrl) URL.revokeObjectURL(videoUrl);
+  videoUrl = URL.createObjectURL(blob);
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  const name = `avatar-${stamp}.${extension}`;
+  $('video-result').src = videoUrl;
+  $('btn-download').href = videoUrl;
+  $('btn-download').download = name;
+  const file = new File([blob], name, { type: blob.type });
+  const share = $('btn-share');
+  share.hidden = !navigator.canShare?.({ files: [file] });
+  share.onclick = () => navigator.share({ files: [file] }).catch(() => {});
+  $('video-note').textContent = extension === 'webm' ? t('video_webm_note') : '';
+  $('video-dialog').showModal();
+}
+
+$('video-dialog').addEventListener('close', () => $('video-result').pause());
+$('video-format').value = store.get('avatar.videoFormat', 'portrait');
+$('video-format').addEventListener('change', (e) => store.set('avatar.videoFormat', e.target.value));
+$('video-captions').checked = store.get('avatar.videoCaptions', true);
+$('video-captions').addEventListener('change', (e) => store.set('avatar.videoCaptions', e.target.checked));
 
 // ---------- animation loop ----------
 const live = createParams();
 const idle = new IdleAnimator();
 let last = performance.now();
+
+const blendshapesOf = (result) => Object.fromEntries((result.faceBlendshapes?.[0]?.categories || []).map((c) => [c.categoryName, c.score]));
+
+// The user's own mouth shape, smoothed, mirrored by the 3D character.
+const liveVisemes = Object.fromEntries(VISEME_IDS.map((id) => [id, 0]));
+function mirrorMouth(shapes, dt) {
+  const id = shapes ? visemeOfBlendshapes(shapes) : null;
+  const strength = id ? visemeStrength(id, shapes) : 0;
+  const k = Math.min(1, dt * 18);
+  for (const v of VISEME_IDS) liveVisemes[v] += ((v === id ? strength : 0) - liveVisemes[v]) * k;
+  return Object.entries(liveVisemes).filter(([, w]) => w > 0.01);
+}
 
 function frame(now) {
   const dt = Math.min(0.1, (now - last) / 1000);
@@ -874,9 +1082,12 @@ function frame(now) {
     if (tracker.ready) autoCapture(result, target, dt);
     else $('guide-text').textContent = t('loading_model', { pct: formatNumber(Math.round(state.modelProgress * 100)) });
   }
-  if (tracked && state.real && mouths.offer(video, result.faceLandmarks[0], target, now)) onMouthSamplesChanged();
+  const shapes = tracked ? blendshapesOf(result) : null;
+  if (tracked && state.real) collectMouthSamples(result.faceLandmarks[0], shapes, target, now, dt);
   if (showsLiveCamera() !== liveCameraShown) renderStage();
-  if (!target) target = idle.apply(createParams(), dt);
+  // While recording, the avatar moves on its own (natural idle motion) instead of copying the camera.
+  const follow = tracked && !state.recording;
+  if (!follow) target = idle.apply(createParams(), dt);
 
   const mouth = speaker.mouth();
   if (mouth) {
@@ -884,34 +1095,34 @@ function frame(now) {
     target.wide = mouth.wide;
     target.pucker = mouth.pucker;
     target.smile = Math.min(target.smile, 0.25);
-    if (!tracked) target.pitch += mouth.energy * 0.06;
+    if (!follow) {
+      // A small nod and brow lift on stressed syllables.
+      target.pitch += (mouth.nod ?? mouth.energy) * 0.05;
+      target.browUp = Math.max(target.browUp, (mouth.nod || 0) * 0.25);
+    }
   }
   smoothParams(live, target, dt, mouth ? 28 : 16);
 
   if (usesCharacter()) characters?.update(live, dt);
   else if (faceAvatar?.ready && !liveCameraShown) {
-    // Mouth images to use: the user's real frames (realistic) or the character's mouth-open images.
+    // Mouth images: the user's real frames (realistic) or the character's Gemini-made images.
     const realistic = state.mode === 'realistic';
     const character = state.generated[state.look];
-    const samples = realistic ? (mouths.ready ? mouths.list() : []) : character?.mouths || [];
-    const samplesKey = realistic ? `real:${mouths.ready}:${mouths.version}` : `char:${state.look}:${samples.length}`;
+    const samples = (realistic ? mouths.ready && mouths.set : character?.visemes) || {};
+    const samplesKey = realistic ? `real:${mouths.ready}:${mouths.version}` : `char:${state.look}:${Object.keys(samples).length}`;
     if (samplesKey !== mouthsApplied) {
       faceAvatar.setMouthSamples(samples);
       mouthsApplied = samplesKey;
     }
-    if (!realistic && character && samples.length < 2) ensureCharacterMouths(state.look);
-    // Lip gap (gap / mouth width) to show: from speech, or (character only) from the user's own mouth.
-    if (tracked) {
-      const g = lipGap(result.faceLandmarks[0], video.videoWidth, video.videoHeight);
-      state.liveGap += (g - state.liveGap) * Math.min(1, dt * 18);
+    if (!realistic && character && Object.keys(samples).length < 4) ensureCharacterMouths(state.look);
+    let visemes = null;
+    if (faceAvatar.hasMouthSamples) {
+      if (mouth) visemes = mouth.visemes || [['AA', Math.min(1, mouth.jawOpen * 1.6)]];
+      else visemes = realistic ? [] : mirrorMouth(follow ? shapes : null, dt);
     }
-    let mouthGap = null;
-    if (samples.length > 1) {
-      if (mouth) mouthGap = mouth.jawOpen * 0.6;
-      else if (!realistic) mouthGap = tracked ? state.liveGap : 0;
-    }
-    faceAvatar.update(live, dt, { relativePose: !tracked, mouthFromSpeech: !!mouth, mouthGap });
+    faceAvatar.update(live, dt, { relativePose: !follow, mouthFromSpeech: !!mouth, visemes });
   }
+  if (state.recording) state.recording.recorder.draw(recordLayers(), speaker.elapsed());
 
   requestAnimationFrame(frame);
 }
@@ -926,6 +1137,7 @@ function renderLanguage() {
   renderCharCount();
   setAuthTab(state.authTab);
   if ($('plans-dialog').open) renderPlans();
+  renderSpeaking(speaker.speaking ? 'playing' : 'idle');
 }
 
 $('btn-lang').addEventListener('click', () => {

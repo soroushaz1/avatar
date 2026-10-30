@@ -41,7 +41,14 @@
           <div class="guide-oval" id="guide-oval"></div>
           <p class="guide-text" id="guide-text"></p>
         </div>
-        <div id="coach" class="coach" hidden><p id="coach-text"></p></div>
+        <div id="coach" class="coach" hidden>
+          <div class="coach-card">
+            <p class="coach-title" id="coach-title"></p>
+            <p class="coach-text" id="coach-text"></p>
+            <div class="coach-dots" id="coach-dots"></div>
+          </div>
+        </div>
+        <div id="rec-badge" class="rec-badge" hidden><span class="rec-dot"></span><span id="rec-text"></span></div>
         <div id="status" class="status" hidden></div>
         <div id="overlay" class="overlay" hidden>
           <div class="overlay-card">
@@ -106,12 +113,27 @@
           <button id="btn-speak" class="btn primary grow" data-i18n="speak">بخوان</button>
           <button id="btn-stop" class="btn ghost" hidden data-i18n="stop">توقف</button>
         </div>
+        <div class="video-box">
+          <h4 data-i18n="video_title">ویدیوی آواتار شما</h4>
+          <div class="row wrap">
+            <select id="video-format" data-i18n-aria="video_format" aria-label="قالب ویدیو">
+              <option value="portrait" data-i18n="format_portrait">عمودی ۹:۱۶ (استوری و ریلز)</option>
+              <option value="square" data-i18n="format_square">مربع ۱:۱ (پست)</option>
+              <option value="landscape" data-i18n="format_landscape">افقی ۱۶:۹ (یوتیوب)</option>
+            </select>
+            <label class="check"><input type="checkbox" id="video-captions" checked> <span data-i18n="captions">زیرنویس</span></label>
+            <button id="btn-video" class="btn accent grow" data-i18n="make_video">ساخت و دانلود ویدیو</button>
+          </div>
+        </div>
         <div class="lock" id="speak-lock">
           <div class="lock-icon" aria-hidden="true">
             <svg viewBox="0 0 24 24"><path d="M7 10V7a5 5 0 0 1 10 0v3" fill="none" stroke="currentColor" stroke-width="2"/><rect x="4" y="10" width="16" height="11" rx="3" fill="currentColor"/></svg>
           </div>
-          <p data-i18n-html="tts_locked">خواندن متن مخصوص <b>مشترکین</b> است.</p>
-          <button id="btn-subscribe" class="btn primary" data-i18n="subscribe">خرید اشتراک</button>
+          <p data-i18n-html="tts_locked">خواندن متن و ساخت ویدیو مخصوص <b>مشترکین</b> است.</p>
+          <div class="row wrap center">
+            <button id="btn-subscribe" class="btn primary" data-i18n="subscribe">خرید اشتراک</button>
+            <button id="btn-demo" class="btn ghost" data-i18n="demo">شنیدن نمونه‌ی رایگان</button>
+          </div>
         </div>
       </div>
 
@@ -145,8 +167,27 @@
       <button type="button" class="close" data-close data-i18n-aria="close" aria-label="بستن">×</button>
       <h2 data-i18n="subscribe">خرید اشتراک</h2>
       <p class="muted" data-i18n="plans_intro">با اشتراک، آواتار فانتزی یا واقعی شما هر متنی را با صدای طبیعی می‌خواند.</p>
+      <ul class="benefits">
+        <li data-i18n="benefit_read">خواندن هر متن فارسی یا انگلیسی با صدای طبیعی و حرکت طبیعی لب‌ها</li>
+        <li data-i18n="benefit_video">دانلود ویدیوی آواتار در قالب عمودی، مربع یا افقی برای اینستاگرام، واتس‌اپ و یوتیوب</li>
+        <li data-i18n="benefit_captions">زیرنویس خودکار روی ویدیو</li>
+        <li data-i18n="benefit_characters">ساخت تا ۲۰ شخصیت سه‌بعدی در روز</li>
+      </ul>
       <div class="plans" id="plans"></div>
       <p class="muted small" data-i18n="secure_payment">پرداخت امن با درگاه زرین‌پال</p>
+    </div>
+  </dialog>
+
+  <dialog id="video-dialog" class="dialog wide">
+    <div>
+      <button type="button" class="close" data-close data-i18n-aria="close" aria-label="بستن">×</button>
+      <h2 data-i18n="video_ready_title">ویدیوی شما آماده است</h2>
+      <video id="video-result" class="video-result" controls playsinline></video>
+      <div class="row wrap">
+        <a id="btn-download" class="btn primary grow" data-i18n="download">دانلود ویدیو</a>
+        <button id="btn-share" class="btn ghost" hidden data-i18n="share">اشتراک‌گذاری</button>
+      </div>
+      <p class="muted small" id="video-note"></p>
     </div>
   </dialog>
 

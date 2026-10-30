@@ -42,7 +42,7 @@ export const config = {
     // Override only for testing against a mock API.
     apiBase: (env.GEMINI_API_BASE || 'https://generativelanguage.googleapis.com').replace(/\/$/, ''),
     // Character generations per 24h: whole site / free visitor (account or IP) / subscriber.
-    // Each character is four images (the character and three mouth shapes), about $0.16 with Gemini Flash.
+    // Each character is nine images (the character and eight mouth shapes), about $0.35 with Gemini Flash.
     dailyLimit: Number(env.AVATAR_DAILY_LIMIT || 100),
     freeLimit: Number(env.AVATAR_FREE_LIMIT || 2),
     subscriberLimit: Number(env.AVATAR_SUBSCRIBER_LIMIT || 20),

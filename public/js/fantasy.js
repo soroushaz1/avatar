@@ -266,6 +266,7 @@ export class FantasyAvatar {
     this.root = new THREE.Group();
     this.scene.add(this.root);
     this.time = 0;
+    this.renderSize = null;
     this.setCharacter('fox');
   }
 
@@ -320,9 +321,12 @@ export class FantasyAvatar {
   }
 
   resize() {
-    const w = this.canvas.clientWidth, h = this.canvas.clientHeight;
+    // renderSize: [width, height] to render at instead of the on-screen size (while recording a video).
+    const [w, h] = this.renderSize || [this.canvas.clientWidth, this.canvas.clientHeight];
     if (!w || !h) return;
-    if (this.canvas.width !== Math.round(w * this.renderer.getPixelRatio())) this.renderer.setSize(w, h, false);
+    const ratio = this.renderSize ? 1 : Math.min(window.devicePixelRatio || 1, 2);
+    if (this.renderer.getPixelRatio() !== ratio) this.renderer.setPixelRatio(ratio);
+    if (this.canvas.width !== Math.round(w * ratio) || this.canvas.height !== Math.round(h * ratio)) this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
     // Pull back on narrow (portrait) screens so the head always fits.
     const dist = 9.4 / Math.min(1, Math.max(0.55, this.camera.aspect));

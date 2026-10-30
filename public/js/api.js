@@ -1,6 +1,6 @@
 import { lang, t } from './i18n.js';
 
-async function request(method, url, body, { binary = false } = {}) {
+async function request(method, url, body) {
   const res = await fetch(url, {
     method,
     credentials: 'same-origin',
@@ -11,7 +11,7 @@ async function request(method, url, body, { binary = false } = {}) {
     const data = await res.json().catch(() => ({}));
     throw Object.assign(new Error(data.error || t('network_error')), { status: res.status, data });
   }
-  return binary ? res.arrayBuffer() : res.json();
+  return res.json();
 }
 
 export const api = {
@@ -25,5 +25,7 @@ export const api = {
   avatarStyles: () => request('GET', '/api/avatar/styles'),
   generateAvatar: (image, style) => request('POST', '/api/avatar/generate', { image, style }),
   avatarMouths: (image) => request('POST', '/api/avatar/mouths', { image }),
-  tts: (text, voice, speed) => request('POST', '/api/tts', { text, voice, speed }, { binary: true }),
+  // Speech as { audio (base64), mime, phonemes: [[phoneme, start, duration]] }.
+  tts: (text, voice, speed) => request('POST', '/api/tts', { text, voice, speed }),
+  ttsDemo: (lang, voice) => request('POST', '/api/tts/demo', { lang, voice }),
 };

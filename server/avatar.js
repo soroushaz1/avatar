@@ -1,6 +1,6 @@
 // Generates a stylised 3D-character version of the user's photo with Google Gemini, plus copies of
-// that character with the mouth open (so it can talk with a real-looking mouth). The browser then
-// animates these images exactly like the realistic avatar.
+// that character with the mouth in each speech shape (viseme), so it talks with a real-looking mouth.
+// The browser then animates these images exactly like the realistic avatar.
 import express from 'express';
 import sharp from 'sharp';
 import { config } from './config.js';
@@ -32,15 +32,22 @@ export const AVATAR_STYLES = {
   },
 };
 
-// The same character with the mouth at three openings; the browser blends between them when talking.
+// The same character with the mouth in each viseme (see public/js/visemes.js); the browser morphs
+// between them in time with the speech. The closed-mouth character itself is the "m/b/p" shape.
 const KEEP = `Edit this image and change only the mouth. Keep everything else exactly the same: the same \
 character, face, eyes (open, looking straight at the camera), eyebrows, hair, glasses, facial hair, clothing, \
-colors, lighting, background, camera framing, head position and head size.`;
-const MOUTH_SHAPES = [
-  'The lips are parted a little, as if saying "eh" in the middle of a sentence, with the upper front teeth just visible.',
-  'The mouth is open as if saying "ah" while talking, showing the upper teeth and a little of the tongue.',
-  'The mouth is wide open as if saying a loud "aah", the jaw dropped, showing the upper and lower teeth and the tongue.',
-];
+colors, lighting, background, camera framing, head position and head size. The expression stays neutral and \
+relaxed, as in the middle of calm, natural speech.`;
+const VISEMES = {
+  FF: 'The upper front teeth rest lightly on the lower lip, as when saying "f" or "v". The mouth is barely open.',
+  SS: 'The lips are slightly parted and a little spread, with the upper and lower teeth together and visible, as when saying "s".',
+  E: 'The mouth is half open as when saying "eh" in "bed": lips relaxed, upper teeth visible, a little of the tongue.',
+  AA: 'The mouth is open as when saying "a" in "cat": the jaw lowered moderately, upper teeth and some lower teeth visible, the tongue low.',
+  AW: 'The mouth is open wide as when saying "ah" in "father": the jaw dropped, lips slightly rounded, upper teeth and the tongue visible.',
+  I: 'The lips are spread wide and pulled back towards the cheeks, with the teeth almost together and visible, as when saying "ee" in "see". Not a smile: the eyes and cheeks stay relaxed.',
+  O: 'The lips are rounded into an "o" shape, open in the middle, as when saying "oh" in "go".',
+  U: 'The lips are pushed forward and rounded into a small, tight circle, as when saying "oo" in "food".',
+};
 
 const DAY = 24 * 60 * 60 * 1000;
 const inFlight = new Set();
@@ -75,12 +82,17 @@ async function asJpegDataUrl(image) {
   }
 }
 
-// Mouth-open versions of a character image; shapes Gemini refuses or fails on are simply skipped.
-async function mouthVariants(image) {
-  const results = await Promise.allSettled(MOUTH_SHAPES.map((shape) => callGemini(`${KEEP} ${shape}`, image.mimeType, image.data)));
-  const ok = results.filter((r) => r.status === 'fulfilled').map((r) => r.value);
-  for (const r of results) if (r.status === 'rejected') console.error('Mouth variant failed:', r.reason.message);
-  return Promise.all(ok.map(asJpegDataUrl));
+// The character with the mouth in each viseme: [{ id, image }]. Shapes Gemini refuses or fails on are
+// skipped (the browser uses the closest shape it has instead).
+async function visemeImages(image) {
+  const ids = Object.keys(VISEMES);
+  const results = await Promise.allSettled(ids.map((id) => callGemini(`${KEEP} ${VISEMES[id]}`, image.mimeType, image.data)));
+  const out = [];
+  for (const [i, r] of results.entries()) {
+    if (r.status === 'fulfilled') out.push({ id: ids[i], image: await asJpegDataUrl(r.value) });
+    else console.error(`Mouth shape ${ids[i]} failed:`, r.reason.message);
+  }
+  return out;
 }
 
 const parseImage = (value) => {
@@ -136,7 +148,7 @@ avatarRouter.get('/styles', (_req, res) => {
   });
 });
 
-// Photo -> character, plus its mouth-open versions (one quota unit).
+// Photo -> character, plus its mouth shapes (one quota unit).
 avatarRouter.post('/generate', express.json({ limit: '4mb' }), async (req, res) => {
   const style = AVATAR_STYLES[req.body?.style] ? req.body.style : 'animated';
   const photo = parseImage(req.body?.image);
@@ -144,14 +156,14 @@ avatarRouter.post('/generate', express.json({ limit: '4mb' }), async (req, res) 
   await withQuota(req, res, style, async () => {
     const prompt = `Turn the person in this photo into ${AVATAR_STYLES[style].prompt}. ${IDENTITY}`;
     const character = await callGemini(prompt, photo.mimeType, photo.data);
-    const [image, mouths] = await Promise.all([asJpegDataUrl(character), mouthVariants(character)]);
-    return { image, mouths, style };
+    const [image, visemes] = await Promise.all([asJpegDataUrl(character), visemeImages(character)]);
+    return { image, visemes, style };
   });
 });
 
-// Mouth-open versions for a character made before they existed (one quota unit).
+// Mouth shapes for a character made before they existed (one quota unit).
 avatarRouter.post('/mouths', express.json({ limit: '4mb' }), async (req, res) => {
   const character = parseImage(req.body?.image);
   if (!character) return res.status(400).json({ error: msg(req, 'bad_photo') });
-  await withQuota(req, res, 'mouths', async () => ({ mouths: await mouthVariants(character) }));
+  await withQuota(req, res, 'mouths', async () => ({ visemes: await visemeImages(character) }));
 });
