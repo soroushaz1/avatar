@@ -24,11 +24,67 @@ void main() {
   gl_Position = vec4(aPos.xy * uView.xy + uView.zw, clamp(aPos.z * uDepth, -0.99, 0.99), 1.0);
 }`;
 
+// uFeather fades a mouth-sample frame out towards its crop edges so it blends into the portrait.
 const FRAGMENT_SHADER = `
 precision mediump float;
 uniform sampler2D uTex;
+uniform float uAlpha;
+uniform float uFeather;
 varying vec2 vUv;
-void main() { gl_FragColor = texture2D(uTex, vUv); }`;
+void main() {
+  float edge = min(min(vUv.x, 1.0 - vUv.x), min(vUv.y, 1.0 - vUv.y));
+  float a = uAlpha * (uFeather > 0.0 ? smoothstep(0.0, uFeather, edge) : 1.0);
+  gl_FragColor = vec4(texture2D(uTex, vUv).rgb, a);
+}`;
+
+// Landmarks that barely move when talking, used to line mouth samples up with the portrait.
+const STABLE_POINTS = [33, 133, 362, 263, 168, 6, 197, 195, 5, 4, 10, 151, 9, 127, 356, 234, 454];
+
+// Face landmarks plus two rings around the face and the image border, in pixels (with depth).
+function meshPoints(landmarks, W, H) {
+  const pts = [];
+  for (let i = 0; i < FACE_POINT_COUNT; i++) {
+    const l = landmarks[i];
+    pts.push([l.x * W, l.y * H, l.z * W]);
+  }
+  const P = (i) => pts[i];
+  const faceW = Math.hypot(P(CHEEK_A)[0] - P(CHEEK_B)[0], P(CHEEK_A)[1] - P(CHEEK_B)[1]);
+  const center = [(P(CHEEK_A)[0] + P(CHEEK_B)[0]) / 2, (P(FOREHEAD)[1] + P(CHIN)[1]) / 2];
+  const meanZ = FACE_OVAL.reduce((s, i) => s + P(i)[2], 0) / FACE_OVAL.length;
+  const backZ = meanZ + 0.45 * faceW;
+  for (const scale of [1.3, 1.75]) {
+    for (const i of FACE_OVAL) {
+      const p = P(i);
+      pts.push([
+        Math.min(W - 1, Math.max(1, center[0] + (p[0] - center[0]) * scale)),
+        Math.min(H - 1, Math.max(1, center[1] + (p[1] - center[1]) * scale)),
+        backZ,
+      ]);
+    }
+  }
+  const steps = 8;
+  for (let k = 0; k < steps; k++) {
+    const t = k / steps;
+    for (const [x, y] of [[t * W, 0], [W, t * H], [W - t * W, H], [0, H - t * H]]) pts.push([x, y, backZ + faceW]);
+  }
+  return { pts, center, faceW, backZ };
+}
+
+// Least-squares similarity transform (scale, rotation, shift) taking src points onto dst points.
+function similarity(src, dst, ids) {
+  let msx = 0, msy = 0, mdx = 0, mdy = 0;
+  for (const i of ids) { msx += src[i][0]; msy += src[i][1]; mdx += dst[i][0]; mdy += dst[i][1]; }
+  msx /= ids.length; msy /= ids.length; mdx /= ids.length; mdy /= ids.length;
+  let a = 0, b = 0, n = 0;
+  for (const i of ids) {
+    const sx = src[i][0] - msx, sy = src[i][1] - msy, dx = dst[i][0] - mdx, dy = dst[i][1] - mdy;
+    a += sx * dx + sy * dy;
+    b += sx * dy - sy * dx;
+    n += sx * sx + sy * sy;
+  }
+  const c = a / n, s = b / n, k = Math.hypot(c, s);
+  return (p) => [c * (p[0] - msx) - s * (p[1] - msy) + mdx, s * (p[0] - msx) + c * (p[1] - msy) + mdy, p[2] * k];
+}
 
 function compile(gl, type, src) {
   const s = gl.createShader(type);
@@ -57,6 +113,8 @@ export class FaceAvatar {
       aUv: gl.getAttribLocation(prog, 'aUv'),
       uView: gl.getUniformLocation(prog, 'uView'),
       uDepth: gl.getUniformLocation(prog, 'uDepth'),
+      uAlpha: gl.getUniformLocation(prog, 'uAlpha'),
+      uFeather: gl.getUniformLocation(prog, 'uFeather'),
     };
     this.posBuf = gl.createBuffer();
     this.uvBuf = gl.createBuffer();
@@ -64,6 +122,8 @@ export class FaceAvatar {
     this.tex = gl.createTexture();
     this.face = null;
     this.source = null;
+    // Real mouth frames of the user (see setMouthSamples), each with its own texture and mesh.
+    this.samples = [];
   }
 
   get ready() {
@@ -88,49 +148,24 @@ export class FaceAvatar {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
-    const pts = [];
-    for (let i = 0; i < FACE_POINT_COUNT; i++) {
-      const l = landmarks[i];
-      pts.push([l.x * W, l.y * H, l.z * W]);
-    }
+    const { pts, center, faceW } = meshPoints(landmarks, W, H);
     const P = (i) => pts[i];
     const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
-    const faceW = dist(P(CHEEK_A), P(CHEEK_B));
     const faceH = dist(P(FOREHEAD), P(CHIN));
     const mouthW = dist(P(61), P(291));
 
-    // Face-aligned axes (photo may be tilted): ex points from eye A to eye B, ey points down the face.
+    // Face-aligned axes (the face may be tilted): ex points from eye A to eye B, ey points down the face.
     const ex0 = [P(263)[0] - P(33)[0], P(263)[1] - P(33)[1]];
     const exl = Math.hypot(...ex0);
     const ex = [ex0[0] / exl, ex0[1] / exl];
     const ey = [-ex[1], ex[0]];
 
-    // Pivot for head rotation: between the cheeks, pushed behind the face.
-    const center = [(P(CHEEK_A)[0] + P(CHEEK_B)[0]) / 2, (P(FOREHEAD)[1] + P(CHIN)[1]) / 2];
-    const meanZ = FACE_OVAL.reduce((s, i) => s + P(i)[2], 0) / FACE_OVAL.length;
+    // Pivot for head rotation: between the cheeks, pushed behind the face. The two rings around the
+    // face follow the head partly so the warp fades out smoothly; the image border stays fixed.
+    const meanZ = FACE_OVAL.reduce((sum, i) => sum + P(i)[2], 0) / FACE_OVAL.length;
     const pivot = [center[0], center[1] + 0.1 * faceH, meanZ + 0.45 * faceW];
-
-    // Extra points around the face so the warp fades out smoothly, plus the image border (fixed).
-    const headWeight = new Array(pts.length).fill(1);
-    const ring = (scale, w) => {
-      for (const i of FACE_OVAL) {
-        const p = P(i);
-        const x = Math.min(W - 1, Math.max(1, center[0] + (p[0] - center[0]) * scale));
-        const y = Math.min(H - 1, Math.max(1, center[1] + (p[1] - center[1]) * scale));
-        pts.push([x, y, pivot[2]]);
-        headWeight.push(w);
-      }
-    };
-    ring(1.3, 0.55);
-    ring(1.75, 0.2);
-    const steps = 8;
-    for (let k = 0; k < steps; k++) {
-      const t = k / steps;
-      for (const [x, y] of [[t * W, 0], [W, t * H], [W - t * W, H], [0, H - t * H]]) {
-        pts.push([x, y, pivot[2] + faceW]);
-        headWeight.push(0);
-      }
-    }
+    const ringN = FACE_OVAL.length;
+    const headWeight = pts.map((_, i) => (i < FACE_POINT_COUNT ? 1 : i < FACE_POINT_COUNT + ringN ? 0.55 : i < FACE_POINT_COUNT + 2 * ringN ? 0.2 : 0));
 
     // Triangulate in 2D. The mesh stays whole: the inside of the mouth is painted over it while the
     // lips are apart, so a closed mouth looks exactly like the original image.
@@ -199,7 +234,60 @@ export class FaceAvatar {
       restOpen: dist(P(13), P(14)) > 0.06 * mouthW,
       restGap: dist(P(13), P(14)) / dist(P(78), P(308)),
       positions: new Float32Array(n * 3),
+      positionsB: new Float32Array(n * 3),
     };
+    for (const sm of this.samples) sm.aligned = null;
+  }
+
+  /**
+   * Real frames of the user's mouth at different openings (from the webcam), used instead of a
+   * painted mouth when the realistic avatar speaks.
+   * @param samples [{ canvas, landmarks (normalized to the canvas), gap }]
+   */
+  setMouthSamples(samples) {
+    const gl = this.gl;
+    for (const sm of this.samples) {
+      gl.deleteTexture(sm.tex);
+      gl.deleteBuffer(sm.uvBuf);
+    }
+    this.samples = samples.map((sample) => {
+      const { canvas, landmarks, gap } = sample;
+      const W = canvas.width, H = canvas.height;
+      const tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      const { pts } = meshPoints(landmarks, W, H);
+      const uvs = new Float32Array(pts.length * 2);
+      pts.forEach((p, i) => { uvs[i * 2] = p[0] / W; uvs[i * 2 + 1] = p[1] / H; });
+      const uvBuf = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, uvBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, uvs, gl.STATIC_DRAW);
+      return { tex, uvBuf, pts, gap, aligned: null };
+    }).sort((a, b) => a.gap - b.gap);
+  }
+
+  // The two samples around the wanted lip gap and how far to blend from the first to the second.
+  pickSamples(gap) {
+    const list = this.samples;
+    if (gap <= list[0].gap) return [list[0], null, 0];
+    for (let i = 0; i < list.length - 1; i++) {
+      if (gap <= list[i + 1].gap) return [list[i], list[i + 1], (gap - list[i].gap) / (list[i + 1].gap - list[i].gap)];
+    }
+    return [list[list.length - 1], null, 0];
+  }
+
+  // A sample's mesh moved onto the portrait (stable landmarks matched), so only the mouth area differs.
+  alignedSample(sm) {
+    if (!sm.aligned) {
+      const f = this.face;
+      const map = similarity(sm.pts, f.rest, STABLE_POINTS);
+      sm.aligned = sm.pts.map(map);
+    }
+    return sm.aligned;
   }
 
   clear() {
@@ -222,9 +310,8 @@ export class FaceAvatar {
   // Deforms the rest mesh according to the params (all in photo pixel space).
   // With relativePose the head angles are offsets from the photo's own pose (idle/speech motion).
   // With mouthFromSpeech the jaw opens from the image's own mouth instead of mirroring tracked openness.
-  deform(p, relativePose, mouthFromSpeech) {
+  deform(p, relativePose, mouthFromSpeech, rest = this.face.rest, out = this.face.positions) {
     const f = this.face;
-    const out = f.positions;
     const { ex, ey, mouthW, faceH } = f;
     const jawRef = mouthFromSpeech ? 0 : f.restPose.jawOpen || 0;
     const jaw = Math.max(0, p.jawOpen - jawRef) * 0.45 * mouthW;
@@ -233,10 +320,10 @@ export class FaceAvatar {
 
     // Relative head rotation since the photo, limited to what a 2D warp can sell.
     const lim = (v, m) => Math.max(-m, Math.min(m, v));
-    const rest = relativePose ? { yaw: 0, pitch: 0, roll: 0 } : f.restPose;
-    const yaw = lim(p.yaw - rest.yaw, 0.35);
-    const pitch = lim(p.pitch - rest.pitch, 0.3);
-    const roll = lim(p.roll - rest.roll, 0.35);
+    const pose = relativePose ? { yaw: 0, pitch: 0, roll: 0 } : f.restPose;
+    const yaw = lim(p.yaw - pose.yaw, 0.35);
+    const pitch = lim(p.pitch - pose.pitch, 0.3);
+    const roll = lim(p.roll - pose.roll, 0.35);
     const cy = Math.cos(yaw), sy = Math.sin(yaw), cx = Math.cos(pitch), sx = Math.sin(pitch), cz = Math.cos(roll), sz = Math.sin(roll);
     // R = Ry * Rx * Rz in a y-up, z-towards-viewer frame.
     const R = [
@@ -249,7 +336,7 @@ export class FaceAvatar {
     const lidOffsets = new Map();
     for (const [eye, blink] of [[EYE_A, p.blinkA], [EYE_B, p.blinkB]]) {
       eye.upper.forEach((u, k) => {
-        const lo = f.rest[eye.lower[k]], up = f.rest[u];
+        const lo = rest[eye.lower[k]], up = rest[u];
         const d = [(lo[0] - up[0]) * blink * 0.92, (lo[1] - up[1]) * blink * 0.92];
         lidOffsets.set(u, d);
         lidOffsets.set(eye.crease[k], [d[0] * 0.4, d[1] * 0.4]);
@@ -257,7 +344,7 @@ export class FaceAvatar {
     }
 
     for (let i = 0; i < f.n; i++) {
-      const r = f.rest[i];
+      const r = rest[i];
       let x = r[0], y = r[1];
       // Expression offsets in face-local (u along ex, v along ey) units.
       let du = 0, dv = f.jaw[i] * jaw;
@@ -289,17 +376,21 @@ export class FaceAvatar {
     return out;
   }
 
-  update(rawParams, dt, { relativePose = false, mouthFromSpeech = false } = {}) {
+  /**
+   * @param mouthGap when set and mouth samples exist, the mouth is shown from the real frame(s)
+   *   with this lip gap (gap / mouth width) instead of being warped and painted.
+   */
+  update(rawParams, dt, { relativePose = false, mouthFromSpeech = false, mouthGap = null } = {}) {
     if (!this.face) return;
     this.resize();
     const f = this.face;
     // A mirrored image already behaves like a mirror; an un-mirrored one needs mirrored params.
     const p = f.mirrored ? rawParams : mirrorParams(rawParams);
-    const pos = this.deform(p, relativePose, mouthFromSpeech);
+    const fromSamples = mouthGap !== null && this.samples.length > 1;
 
-    // Map photo pixels to clip space: show the head-and-shoulders region, always covering the canvas.
+    // Map image pixels to clip space: show the head-and-shoulders region, always covering the canvas.
     const cw = this.glCanvas.width, ch = this.glCanvas.height;
-    const s = Math.max(ch / f.viewH, cw / f.W, ch / f.H); // photo px -> canvas px
+    const s = Math.max(ch / f.viewH, cw / f.W, ch / f.H); // image px -> canvas px
     const hw = cw / s / 2, hh = ch / s / 2;
     const vx = Math.min(f.W - hw, Math.max(hw, f.viewC[0]));
     const vy = Math.min(f.H - hh, Math.max(hh, f.viewC[1]));
@@ -313,22 +404,49 @@ export class FaceAvatar {
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     gl.enable(gl.DEPTH_TEST);
+    gl.disable(gl.BLEND);
     gl.useProgram(this.prog);
     gl.uniform4f(this.loc.uView, sxClip, syClip, oxClip, oyClip);
     gl.uniform1f(this.loc.uDepth, 1 / (f.faceW * 4));
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.posBuf);
-    gl.bufferData(gl.ARRAY_BUFFER, pos, gl.DYNAMIC_DRAW);
-    gl.enableVertexAttribArray(this.loc.aPos);
-    gl.vertexAttribPointer(this.loc.aPos, 3, gl.FLOAT, false, 0, 0);
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.uvBuf);
-    gl.enableVertexAttribArray(this.loc.aUv);
-    gl.vertexAttribPointer(this.loc.aUv, 2, gl.FLOAT, false, 0, 0);
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.idxBuf);
-    gl.bindTexture(gl.TEXTURE_2D, this.tex);
-    gl.drawElements(gl.TRIANGLES, f.indices, gl.UNSIGNED_SHORT, 0);
 
-    const toCanvas = (x, y) => [(x * sxClip + oxClip + 1) / 2 * cw, (1 - (y * syClip + oyClip)) / 2 * ch];
-    this.drawMouth((i) => toCanvas(pos[i * 3], pos[i * 3 + 1]));
+    const draw = (positions, tex, uvBuf, alpha, feather) => {
+      gl.uniform1f(this.loc.uAlpha, alpha);
+      gl.uniform1f(this.loc.uFeather, feather);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.posBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, positions, gl.DYNAMIC_DRAW);
+      gl.enableVertexAttribArray(this.loc.aPos);
+      gl.vertexAttribPointer(this.loc.aPos, 3, gl.FLOAT, false, 0, 0);
+      gl.bindBuffer(gl.ARRAY_BUFFER, uvBuf);
+      gl.enableVertexAttribArray(this.loc.aUv);
+      gl.vertexAttribPointer(this.loc.aUv, 2, gl.FLOAT, false, 0, 0);
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.drawElements(gl.TRIANGLES, f.indices, gl.UNSIGNED_SHORT, 0);
+    };
+
+    if (!fromSamples) {
+      const pos = this.deform(p, relativePose, mouthFromSpeech);
+      draw(pos, this.tex, this.uvBuf, 1, 0);
+      const toCanvas = (x, y) => [(x * sxClip + oxClip + 1) / 2 * cw, (1 - (y * syClip + oyClip)) / 2 * ch];
+      this.drawMouth((i) => toCanvas(pos[i * 3], pos[i * 3 + 1]));
+      return;
+    }
+
+    // The mouth comes from real frames: the portrait underneath, then the matching frame(s) on top,
+    // all moved by the same head pose and blinks (the mouth itself is not warped).
+    this.mctx.clearRect(0, 0, this.mouthCanvas.width, this.mouthCanvas.height);
+    const still = { ...p, jawOpen: 0, smile: 0, wide: 0, pucker: 0 };
+    draw(this.deform(still, relativePose, true), this.tex, this.uvBuf, 1, 0);
+    const [a, b, t] = this.pickSamples(mouthGap);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    for (const [sm, alpha] of [[a, 1], [b, t]]) {
+      if (!sm || alpha < 0.02) continue;
+      gl.clear(gl.DEPTH_BUFFER_BIT);
+      const pos = this.deform(still, relativePose, true, this.alignedSample(sm), f.positionsB);
+      draw(pos, sm.tex, sm.uvBuf, alpha, 0.12);
+    }
+    gl.disable(gl.BLEND);
   }
 
   // Paints the inside of the mouth over the face while the lips are apart (fading in as they part).

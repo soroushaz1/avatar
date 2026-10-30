@@ -139,6 +139,18 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 @media (max-width: 600px) { .guide-oval { width: 62%; } }
 
+.coach {
+  position: absolute; inset-inline: 0; bottom: 0; z-index: 3;
+  display: flex; justify-content: center;
+  padding: 0 16px 5%;
+  pointer-events: none;
+}
+.coach p {
+  margin: 0; padding: 10px 16px; border-radius: 16px; max-width: 640px;
+  background: rgba(10, 8, 20, 0.78); backdrop-filter: blur(4px);
+  font-weight: 600; text-align: center; line-height: 1.8;
+}
+
 .preview {
   position: absolute;
   bottom: 14px;

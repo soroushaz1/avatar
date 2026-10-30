@@ -3,6 +3,7 @@ import { FaceTracker, detectImage, loadFaceAssets } from './tracker.js';
 import { createParams, paramsFromResult, smoothParams, IdleAnimator } from './face-params.js';
 import { FaceAvatar } from './face-avatar.js';
 import { Speaker, unlockAudio, detectLang } from './speech.js';
+import { MouthSamples, BIN_COUNT } from './mouth-samples.js';
 import { t, lang, setLanguage, applyLanguage, formatNumber, formatDate } from './i18n.js';
 
 const $ = (id) => document.getElementById(id);
@@ -73,6 +74,8 @@ try {
   console.warn('Face avatar unavailable', err);
 }
 const speaker = new Speaker();
+// Real frames of the user's mouth, collected while they talk to the camera (for the realistic avatar).
+const mouths = new MouthSamples();
 
 const usesCharacter = () => state.mode === 'fantasy' && state.look.startsWith('char:');
 // The portrait that should be on screen right now (null while it still has to be captured/created).
@@ -223,18 +226,26 @@ function syncPortrait() {
   else faceAvatar.clear();
 }
 
+// In realistic mode, while the camera sees the user and the avatar isn't reading text, the
+// realistic avatar is simply the live camera: a real face needs no drawn mouth.
+const showsLiveCamera = () => state.mode === 'realistic' && !!state.real && tracker.cameraOn && tracker.ready
+  && state.faceVisible && !speaker.speaking;
+let liveCameraShown = false;
+
 function renderStage() {
   syncPortrait();
   const charMode = usesCharacter();
   const capturing = needsCapture();
-  const live = capturing && tracker.cameraOn && !!faceAvatar;
+  liveCameraShown = showsLiveCamera();
+  const live = (capturing && tracker.cameraOn && !!faceAvatar) || liveCameraShown;
 
   $('stage').dataset.mode = state.mode;
   $('char-canvas').hidden = !charMode;
-  for (const id of ['face-canvas', 'mouth-canvas']) $(id).hidden = charMode || !faceAvatar?.ready;
+  for (const id of ['face-canvas', 'mouth-canvas']) $(id).hidden = charMode || !faceAvatar?.ready || liveCameraShown;
   video.hidden = !tracker.cameraOn || (!live && !state.showPreview);
   video.classList.toggle('live', live);
-  $('guide').hidden = !live;
+  $('guide').hidden = !(capturing && live);
+  renderCoach();
 
   document.querySelectorAll('.mode-btn').forEach((b) => {
     const active = b.dataset.mode === state.mode;
@@ -248,6 +259,24 @@ function renderStage() {
 
   renderOverlay(capturing);
   renderCamera();
+}
+
+// Asks the user to read a sentence aloud until enough real mouth frames are collected.
+let mouthsWereReady = false;
+function renderCoach() {
+  const show = state.mode === 'realistic' && !!state.real && tracker.cameraOn && tracker.ready && !mouths.ready;
+  $('coach').hidden = !show;
+  if (show) $('coach-text').textContent = t('coach_read', { n: formatNumber(mouths.count), total: formatNumber(BIN_COUNT) });
+  if (mouths.ready && !mouthsWereReady && state.mode === 'realistic') toast(t('samples_ready'), 'ok', 6000);
+  mouthsWereReady = mouths.ready;
+}
+
+let mouthsSaveTimer = null;
+let mouthsApplied = -1;
+function onMouthSamplesChanged() {
+  clearTimeout(mouthsSaveTimer);
+  mouthsSaveTimer = setTimeout(() => mouths.save(), 3000);
+  renderCoach();
 }
 
 function renderOverlay(capturing) {
@@ -415,6 +444,7 @@ function forgetFace() {
   state.generated = {};
   state.generationError = null;
   capture.stable = capture.usable = 0;
+  mouths.clear();
 }
 
 async function useNewPhoto(canvas, mirrored) {
@@ -746,6 +776,11 @@ async function speak() {
   if (!state.user) return openAuth('login', () => (state.user.subscribed ? speak() : openPlans()));
   if (!state.user.subscribed) return openPlans();
   if (!usesCharacter() && !faceAvatar?.ready) return toast(t('create_avatar_first'));
+  if (state.mode === 'realistic' && !mouths.ready && !state.cameraError) {
+    // Without a camera at all, the realistic avatar falls back to a painted mouth.
+    renderCoach();
+    return toast(t(tracker.cameraOn ? 'need_samples' : 'need_samples_camera'), '', 7000);
+  }
   unlockAudio();
   renderSpeaking('loading');
   try {
@@ -800,6 +835,8 @@ function frame(now) {
     if (tracker.ready) autoCapture(result, target, dt);
     else $('guide-text').textContent = t('loading_model', { pct: formatNumber(Math.round(state.modelProgress * 100)) });
   }
+  if (tracked && state.real && mouths.offer(video, result.faceLandmarks[0], target, now)) onMouthSamplesChanged();
+  if (showsLiveCamera() !== liveCameraShown) renderStage();
   if (!target) target = idle.apply(createParams(), dt);
 
   const mouth = speaker.mouth();
@@ -813,7 +850,16 @@ function frame(now) {
   smoothParams(live, target, dt, mouth ? 28 : 16);
 
   if (usesCharacter()) characters?.update(live, dt);
-  else if (faceAvatar?.ready) faceAvatar.update(live, dt, { relativePose: !tracked, mouthFromSpeech: !!mouth });
+  else if (faceAvatar?.ready && !liveCameraShown) {
+    const realistic = state.mode === 'realistic';
+    if (realistic && mouths.version !== mouthsApplied) {
+      faceAvatar.setMouthSamples(mouths.list());
+      mouthsApplied = mouths.version;
+    }
+    // Speech drives the realistic mouth through the real frames (lip gap ≈ 0.6 × jaw opening).
+    const mouthGap = realistic && mouth && mouths.ready ? mouth.jawOpen * 0.6 : null;
+    faceAvatar.update(live, dt, { relativePose: !tracked, mouthFromSpeech: !!mouth, mouthGap });
+  }
 
   requestAnimationFrame(frame);
 }
@@ -845,6 +891,8 @@ setStatus(t('getting_ready'));
 await loadStyles();
 if (usesCharacter()) showCharacter(state.look.slice(5));
 await restorePortraits();
+await mouths.restore();
+mouthsWereReady = mouths.ready;
 setStatus('');
 renderStage();
 requestAnimationFrame(frame);
