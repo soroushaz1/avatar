@@ -1,0 +1,45 @@
+name: Gemini check
+
+# Verifies the GEMINI_API_KEY secret: lists the available image models (free) and makes one small
+# test image (about $0.04) to confirm billing works. Prints only status information, never the key.
+on:
+  push:
+    branches: ['claude/**']
+    paths: ['.github/workflows/gemini-check.yml']
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      MODEL: gemini-2.5-flash-image
+    steps:
+      - name: Key is present
+        run: |
+          if [ -z "$GEMINI_API_KEY" ]; then echo "::error::GEMINI_API_KEY secret is missing"; exit 1; fi
+          echo "GEMINI_API_KEY: set (${#GEMINI_API_KEY} characters)"
+
+      - name: List image models
+        run: |
+          code=$(curl -s -o models.json -w '%{http_code}' -H "x-goog-api-key: $(echo "$GEMINI_API_KEY" | tr -d '[:space:]')" \
+            "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000")
+          echo "HTTP $code"
+          if [ "$code" != 200 ]; then jq -r '.error.message // .' models.json; exit 1; fi
+          echo "Image-capable models available to this key:"
+          jq -r '.models[].name' models.json | grep -i image | sed 's#models/#  #'
+
+      - name: Generate one small test image
+        run: |
+          cat > req.json <<'EOF'
+          {"contents":[{"parts":[{"text":"A small friendly cartoon robot waving, simple flat background."}]}],
+           "generationConfig":{"responseModalities":["IMAGE"],"imageConfig":{"aspectRatio":"1:1"}}}
+          EOF
+          code=$(curl -s -o out.json -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+            -H "x-goog-api-key: $(echo "$GEMINI_API_KEY" | tr -d '[:space:]')" \
+            -d @req.json "https://generativelanguage.googleapis.com/v1beta/models/$MODEL:generateContent")
+          echo "HTTP $code"
+          if [ "$code" != 200 ]; then jq -r '.error.message // .' out.json; exit 1; fi
+          bytes=$(jq -r '[.candidates[0].content.parts[] | select(.inlineData) | .inlineData.data] | first // ""' out.json | base64 -d 2>/dev/null | wc -c)
+          if [ "$bytes" -gt 0 ]; then echo "OK: received a $bytes-byte image from $MODEL"; else echo "::error::No image returned"; jq -r '.candidates[0].finishReason // .promptFeedback // .' out.json; exit 1; fi

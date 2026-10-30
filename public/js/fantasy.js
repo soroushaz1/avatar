@@ -3,10 +3,10 @@ import * as THREE from '/vendor/three/three.module.js';
 import { mirrorParams } from './face-params.js';
 
 export const CHARACTERS = [
-  { id: 'fox', name: 'روباه' },
-  { id: 'robot', name: 'ربات' },
-  { id: 'alien', name: 'آدم فضایی' },
-  { id: 'bear', name: 'خرس' },
+  { id: 'fox', name: 'Fox' },
+  { id: 'robot', name: 'Robot' },
+  { id: 'alien', name: 'Alien' },
+  { id: 'bear', name: 'Bear' },
 ];
 
 const std = (color, extra = {}) => new THREE.MeshStandardMaterial({ color, roughness: 0.6, metalness: 0, ...extra });
@@ -76,7 +76,7 @@ class MouthTexture {
     ctx.lineJoin = 'round';
     if (open < 3) {
       ctx.strokeStyle = c.lip;
-      ctx.lineWidth = 7;
+      ctx.lineWidth = 11;
       ctx.beginPath();
       ctx.moveTo(lx, ly);
       ctx.quadraticCurveTo(cx, cy + H * 0.06 + H * 0.12 * p.smile, rx, ly);
@@ -107,7 +107,7 @@ class MouthTexture {
     ctx.restore();
 
     ctx.strokeStyle = c.lip;
-    ctx.lineWidth = 6;
+    ctx.lineWidth = 9;
     ctx.stroke(path);
   }
 
@@ -163,9 +163,9 @@ function buildFox() {
   const skin = std('#f08a3c'), cream = std('#fff1e2'), dark = std('#2a1a14', { roughness: 0.35 });
   const head = new THREE.Group();
   head.add(sphere(1, skin, { scale: [1.08, 0.95, 0.95] }));
-  head.add(sphere(0.45, cream, { pos: [-0.6, -0.36, 0.45], scale: [1, 0.75, 0.8] }));
-  head.add(sphere(0.45, cream, { pos: [0.6, -0.36, 0.45], scale: [1, 0.75, 0.8] }));
-  head.add(sphere(0.48, cream, { pos: [0, -0.33, 0.62], scale: [1.05, 0.72, 0.9] }));
+  head.add(sphere(0.42, cream, { pos: [-0.66, -0.34, 0.32], scale: [0.9, 0.7, 0.7] }));
+  head.add(sphere(0.42, cream, { pos: [0.66, -0.34, 0.32], scale: [0.9, 0.7, 0.7] }));
+  head.add(sphere(0.5, cream, { pos: [0, -0.36, 0.6], scale: [1.05, 0.74, 0.9] }));
   head.add(sphere(0.11, dark, { pos: [0, -0.13, 1.05], scale: [1.35, 0.9, 1] }));
   for (const s of [-1, 1]) {
     head.add(mesh(new THREE.ConeGeometry(0.36, 0.95, 32), skin, { pos: [s * 0.6, 0.98, -0.05], rot: [0, 0, -s * 0.38] }));
@@ -178,7 +178,7 @@ function buildFox() {
     head, body,
     eyes: { pos: [[-0.36, 0.13, 0.8], [0.36, 0.13, 0.8]], opts: { r: 0.17, iris: '#c9780f' } },
     brows: { color: '#fff1e2', pos: [[-0.36, 0.42, 0.86], [0.36, 0.42, 0.86]] },
-    mouth: { style: 'organic', colors: { lip: '#2a1a14' }, pos: [0, -0.47, 1.03], size: [0.62, 0.43], tilt: 0.3 },
+    mouth: { style: 'organic', colors: { lip: '#2a1a14' }, pos: [0, -0.5, 1.04], size: [0.7, 0.48], tilt: 0.35 },
   };
 }
 
@@ -331,9 +331,9 @@ export class FantasyAvatar {
     if (this.canvas.width !== Math.round(w * this.renderer.getPixelRatio())) this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
     // Pull back on narrow (portrait) screens so the head always fits.
-    const dist = 7.6 / Math.min(1, Math.max(0.55, this.camera.aspect));
-    this.camera.position.set(0, -0.25, dist);
-    this.camera.lookAt(0, -0.4, 0);
+    const dist = 9.4 / Math.min(1, Math.max(0.55, this.camera.aspect));
+    this.camera.position.set(0, -0.1, dist);
+    this.camera.lookAt(0, -0.55, 0);
     this.camera.updateProjectionMatrix();
   }
 

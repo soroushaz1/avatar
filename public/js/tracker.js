@@ -72,7 +72,7 @@ export class FaceTracker {
     const canvas = document.createElement('canvas');
     canvas.width = Math.round(w * s);
     canvas.height = Math.round(h * s);
-    canvas.getContext('2d').drawImage(this.video, 0, 0, canvas.width, canvas.height);
+    canvas.getContext('2d', { willReadFrequently: true }).drawImage(this.video, 0, 0, canvas.width, canvas.height);
     return canvas;
   }
 }
@@ -85,3 +85,4 @@ export async function detectImage(source) {
   const landmarker = await imageLandmarkerPromise;
   return landmarker.detect(source);
 }
+

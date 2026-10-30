@@ -4,6 +4,7 @@ import { config, ROOT } from './config.js';
 import { sessionMiddleware, authRouter } from './auth.js';
 import { paymentRouter } from './payment.js';
 import { ttsRouter } from './tts.js';
+import { avatarRouter } from './avatar.js';
 
 const app = express();
 app.disable('x-powered-by');
@@ -32,7 +33,6 @@ app.use((_req, res, next) => {
   next();
 });
 
-app.use(express.json({ limit: '32kb' }));
 app.use(sessionMiddleware);
 
 // Reject cross-site state-changing requests (cookies are SameSite=Lax, this is defence in depth).
@@ -41,6 +41,10 @@ app.use('/api', (req, res, next) => {
   if (!req.is('application/json')) return res.status(415).json({ error: 'Unsupported content type' });
   next();
 });
+
+// Photo uploads need a bigger body limit than the rest of the API.
+app.use('/api/avatar', avatarRouter);
+app.use(express.json({ limit: '32kb' }));
 
 app.use('/api/auth', authRouter);
 app.use('/api/pay', paymentRouter);
@@ -63,10 +67,11 @@ app.use(express.static(path.join(ROOT, 'public'), { maxAge: '1h' }));
 
 app.use((err, _req, res, _next) => {
   console.error(err);
-  res.status(err.status || 500).json({ error: 'خطای داخلی سرور' });
+  res.status(err.status || 500).json({ error: 'Internal server error' });
 });
 
 app.listen(config.port, config.host, () => {
   console.log(`Avatar server listening on http://${config.host}:${config.port} (public URL: ${config.baseUrl})`);
   if (!config.zarinpal.merchantId) console.warn('ZARINPAL_MERCHANT_ID is not set: payments are disabled.');
+  if (!config.gemini.apiKey) console.warn('GEMINI_API_KEY is not set: 3D character generation is disabled.');
 });

@@ -33,8 +33,8 @@ paymentRouter.get('/plans', (_req, res) => {
 
 paymentRouter.post('/request', requireUser, rateLimit({ windowMs: 10 * 60 * 1000, max: 10 }), async (req, res) => {
   const plan = findPlan(req.body?.planId);
-  if (!plan) return res.status(400).json({ error: 'طرح اشتراک نامعتبر است.' });
-  if (!zp.merchantId) return res.status(503).json({ error: 'درگاه پرداخت هنوز تنظیم نشده است.' });
+  if (!plan) return res.status(400).json({ error: 'Unknown subscription plan.' });
+  if (!zp.merchantId) return res.status(503).json({ error: 'Payments are not configured yet.' });
 
   const amountRial = plan.priceToman * 10;
   const { lastInsertRowid } = db
@@ -52,20 +52,20 @@ paymentRouter.post('/request', requireUser, rateLimit({ windowMs: 10 * 60 * 1000
       amount: amountRial,
       currency: 'IRR',
       callback_url: `${config.baseUrl}/api/pay/callback`,
-      description: `${plan.title} - آواتار`,
+      description: `My Avatar - ${plan.title}`,
       metadata,
     });
     if (!data || data.code !== 100 || !data.authority) {
       db.prepare("UPDATE payments SET status = 'failed' WHERE id = ?").run(paymentId);
       console.error('Zarinpal request failed', errors || data);
-      return res.status(502).json({ error: 'اتصال به درگاه پرداخت ناموفق بود.' });
+      return res.status(502).json({ error: 'Could not reach the payment gateway.' });
     }
     db.prepare('UPDATE payments SET authority = ? WHERE id = ?').run(data.authority, paymentId);
     res.json({ url: startPayUrl(data.authority) });
   } catch (err) {
     db.prepare("UPDATE payments SET status = 'failed' WHERE id = ?").run(paymentId);
     console.error('Zarinpal request error', err);
-    res.status(502).json({ error: 'اتصال به درگاه پرداخت ناموفق بود.' });
+    res.status(502).json({ error: 'Could not reach the payment gateway.' });
   }
 });
 

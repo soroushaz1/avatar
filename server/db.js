@@ -38,6 +38,15 @@ db.exec(`
     created_at  INTEGER NOT NULL,
     verified_at INTEGER
   );
+
+  CREATE TABLE IF NOT EXISTS generations (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    ip         TEXT,
+    style      TEXT,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS generations_created ON generations(created_at);
 `);
 
 export function now() {

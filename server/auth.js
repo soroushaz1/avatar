@@ -76,7 +76,7 @@ export function sessionMiddleware(req, _res, next) {
 }
 
 export function requireUser(req, res, next) {
-  if (!req.user) return res.status(401).json({ error: 'ابتدا وارد حساب کاربری شوید.' });
+  if (!req.user) return res.status(401).json({ error: 'Please log in first.' });
   next();
 }
 
@@ -87,11 +87,11 @@ export const authRouter = express.Router();
 authRouter.post('/register', authLimiter, async (req, res) => {
   const login = normalizeLogin(req.body?.login);
   const password = req.body?.password;
-  if (!login) return res.status(400).json({ error: 'ایمیل یا شماره موبایل معتبر وارد کنید.' });
+  if (!login) return res.status(400).json({ error: 'Enter a valid email address or mobile number.' });
   if (typeof password !== 'string' || password.length < 8 || password.length > 200) {
-    return res.status(400).json({ error: 'رمز عبور باید حداقل ۸ کاراکتر باشد.' });
+    return res.status(400).json({ error: 'Password must be at least 8 characters.' });
   }
-  if (getUserByLogin(login)) return res.status(409).json({ error: 'این حساب قبلاً ثبت شده است. وارد شوید.' });
+  if (getUserByLogin(login)) return res.status(409).json({ error: 'An account already exists for this login. Please log in.' });
 
   const hash = await hashPassword(password);
   const { lastInsertRowid } = db
@@ -106,7 +106,7 @@ authRouter.post('/login', authLimiter, async (req, res) => {
   const password = req.body?.password;
   const user = login && getUserByLogin(login);
   if (!user || typeof password !== 'string' || !(await verifyPassword(password, user.password_hash))) {
-    return res.status(401).json({ error: 'نام کاربری یا رمز عبور اشتباه است.' });
+    return res.status(401).json({ error: 'Wrong login or password.' });
   }
   createSession(res, user.id);
   res.json({ user: publicUser(user) });

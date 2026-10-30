@@ -1,5 +1,6 @@
-// "Realistic" avatar: the user's own photo, warped with a triangle mesh built from face landmarks.
-// The mouth is a hole in the mesh; a canvas behind the WebGL layer draws teeth and tongue.
+// Animates a single portrait image (the user's photo, or the 3D character generated from it):
+// a triangle mesh over the face landmarks is warped to follow the webcam or the speech track.
+// The mouth is a hole in the mesh; a canvas behind the WebGL layer draws the inside of the mouth.
 import {
   LIP_UPPER_INNER, LIP_LOWER_INNER, LIP_UPPER_OUTER, LIP_LOWER_OUTER,
   MOUTH_CORNERS_OUTER, MOUTH_CORNERS_INNER, MOUTH_INNER_POLYGON,
@@ -46,7 +47,7 @@ function pointInPolygon(x, y, poly) {
   return inside;
 }
 
-export class RealisticAvatar {
+export class FaceAvatar {
   constructor(glCanvas, mouthCanvas) {
     this.glCanvas = glCanvas;
     this.mouthCanvas = mouthCanvas;
@@ -71,7 +72,7 @@ export class RealisticAvatar {
     this.idxBuf = gl.createBuffer();
     this.tex = gl.createTexture();
     this.face = null;
-    this.time = 0;
+    this.source = null;
   }
 
   get ready() {
@@ -79,12 +80,13 @@ export class RealisticAvatar {
   }
 
   /**
-   * @param image canvas/img holding the photo
-   * @param landmarks normalized MediaPipe landmarks for that photo
-   * @param restPose {yaw,pitch,roll,jawOpen} measured on the photo
-   * @param mirrored whether to show the photo mirrored (true for webcam captures)
+   * @param image canvas holding the portrait
+   * @param landmarks normalized MediaPipe landmarks for that image
+   * @param restPose {yaw,pitch,roll,jawOpen} measured on the image
+   * @param mirrored whether to show the image mirrored (true for webcam captures)
    */
   setFace(image, landmarks, restPose, mirrored) {
+    this.source = image;
     const gl = this.gl;
     const W = image.width, H = image.height;
     gl.bindTexture(gl.TEXTURE_2D, this.tex);
@@ -157,11 +159,11 @@ export class RealisticAvatar {
 
     // Per-vertex weights for each expression, computed once.
     const n = pts.length;
+    const mouthC = [(P(13)[0] + P(14)[0]) / 2, (P(13)[1] + P(14)[1]) / 2];
     const local = (p) => {
       const dx = p[0] - mouthC[0], dy = p[1] - mouthC[1];
       return [dx * ex[0] + dy * ex[1], dx * ey[0] + dy * ey[1]];
     };
-    const mouthC = [(P(13)[0] + P(14)[0]) / 2, (P(13)[1] + P(14)[1]) / 2];
     const chinV = local(P(CHIN))[1];
     const jaw = new Float32Array(n);
     const lowerLip = new Set([...LIP_LOWER_INNER, ...LIP_LOWER_OUTER]);
@@ -212,12 +214,15 @@ export class RealisticAvatar {
       W, H, rest: pts, n, indices: indices.length, ex, ey, pivot, faceW, faceH, mouthW,
       headWeight, jaw, cornerA, cornerB, browA, browB, lipRound,
       restPose, mirrored, viewH, viewC,
+      // An image with the mouth already open keeps its own teeth, attached to the upper lip.
+      restOpen: dist(P(13), P(14)) > 0.06 * mouthW,
       positions: new Float32Array(n * 3),
     };
   }
 
   clear() {
     this.face = null;
+    this.source = null;
     this.mctx.clearRect(0, 0, this.mouthCanvas.width, this.mouthCanvas.height);
     const gl = this.gl;
     gl.clearColor(0, 0, 0, 0);
@@ -233,7 +238,8 @@ export class RealisticAvatar {
   }
 
   // Deforms the rest mesh according to the params (all in photo pixel space).
-  deform(p) {
+  // With relativePose the head angles are offsets from the photo's own pose (idle/speech motion).
+  deform(p, relativePose) {
     const f = this.face;
     const out = f.positions;
     const { ex, ey, mouthW, faceH } = f;
@@ -243,9 +249,10 @@ export class RealisticAvatar {
 
     // Relative head rotation since the photo, limited to what a 2D warp can sell.
     const lim = (v, m) => Math.max(-m, Math.min(m, v));
-    const yaw = lim(p.yaw - f.restPose.yaw, 0.35);
-    const pitch = lim(p.pitch - f.restPose.pitch, 0.3);
-    const roll = lim(p.roll - f.restPose.roll, 0.35);
+    const rest = relativePose ? { yaw: 0, pitch: 0, roll: 0 } : f.restPose;
+    const yaw = lim(p.yaw - rest.yaw, 0.35);
+    const pitch = lim(p.pitch - rest.pitch, 0.3);
+    const roll = lim(p.roll - rest.roll, 0.35);
     const cy = Math.cos(yaw), sy = Math.sin(yaw), cx = Math.cos(pitch), sx = Math.sin(pitch), cz = Math.cos(roll), sz = Math.sin(roll);
     // R = Ry * Rx * Rz in a y-up, z-towards-viewer frame.
     const R = [
@@ -298,26 +305,24 @@ export class RealisticAvatar {
     return out;
   }
 
-  update(rawParams, dt) {
+  update(rawParams, dt, { relativePose = false } = {}) {
     if (!this.face) return;
-    this.time += dt;
     this.resize();
     const f = this.face;
-    // A mirrored photo already behaves like a mirror; an un-mirrored one needs mirrored params.
+    // A mirrored image already behaves like a mirror; an un-mirrored one needs mirrored params.
     const p = f.mirrored ? rawParams : mirrorParams(rawParams);
-    const pos = this.deform(p);
+    const pos = this.deform(p, relativePose);
 
-    // Map photo pixels to clip space, cropping to the head-and-shoulders region (cover fit).
+    // Map photo pixels to clip space: show the head-and-shoulders region, always covering the canvas.
     const cw = this.glCanvas.width, ch = this.glCanvas.height;
-    const scale = Math.max(cw / (f.viewH * (cw / ch)), ch / f.viewH) * (f.viewH / ch);
-    const pxToClipX = (2 * scale * (ch / f.viewH)) / cw * (f.viewH / ch) * (ch / f.viewH);
-    void pxToClipX;
-    const s = ch / f.viewH; // photo px -> canvas px
+    const s = Math.max(ch / f.viewH, cw / f.W, ch / f.H); // photo px -> canvas px
+    const hw = cw / s / 2, hh = ch / s / 2;
+    const vx = Math.min(f.W - hw, Math.max(hw, f.viewC[0]));
+    const vy = Math.min(f.H - hh, Math.max(hh, f.viewC[1]));
     const sxClip = (2 * s) / cw * (f.mirrored ? -1 : 1);
     const syClip = (-2 * s) / ch;
-    const oxClip = -f.viewC[0] * sxClip;
-    const oyClip = -f.viewC[1] * syClip;
-    void scale;
+    const oxClip = -vx * sxClip;
+    const oyClip = -vy * syClip;
 
     const gl = this.gl;
     gl.viewport(0, 0, cw, ch);
@@ -338,15 +343,14 @@ export class RealisticAvatar {
     gl.bindTexture(gl.TEXTURE_2D, this.tex);
     gl.drawElements(gl.TRIANGLES, f.indices, gl.UNSIGNED_SHORT, 0);
 
-    this.drawMouth(pos, (x, y) => [(x * sxClip + oxClip + 1) / 2 * cw, (1 - (y * syClip + oyClip)) / 2 * ch]);
+    const toCanvas = (x, y) => [(x * sxClip + oxClip + 1) / 2 * cw, (1 - (y * syClip + oyClip)) / 2 * ch];
+    this.drawMouth((i) => toCanvas(pos[i * 3], pos[i * 3 + 1]));
   }
 
   // Mouth interior seen through the hole in the mesh.
-  drawMouth(pos, toCanvas) {
+  drawMouth(pt) {
     const ctx = this.mctx;
-    const f = this.face;
     ctx.clearRect(0, 0, this.mouthCanvas.width, this.mouthCanvas.height);
-    const pt = (i) => toCanvas(pos[i * 3], pos[i * 3 + 1]);
     const poly = MOUTH_INNER_POLYGON.map(pt);
     const top = pt(13), bottom = pt(14), left = pt(78), right = pt(308);
     const open = Math.hypot(bottom[0] - top[0], bottom[1] - top[1]);
@@ -359,7 +363,7 @@ export class RealisticAvatar {
     ctx.beginPath();
     poly.forEach(([x, y], k) => (k ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
     ctx.closePath();
-    // Expand slightly so no background shows at the lip edges.
+    // Stroke as well so no background shows at the lip edges.
     ctx.lineWidth = 2;
     ctx.fillStyle = '#2a0c10';
     ctx.strokeStyle = '#2a0c10';
@@ -375,30 +379,64 @@ export class RealisticAvatar {
     ctx.fillStyle = g;
     ctx.fillRect(-width, -width, width * 2, width * 2);
 
-    const topY = (top[0] - mid[0]) * Math.sin(-angle) + (top[1] - mid[1]) * Math.cos(-angle);
-    const botY = (bottom[0] - mid[0]) * Math.sin(-angle) + (bottom[1] - mid[1]) * Math.cos(-angle);
+    const rel = ([x, y]) => (x - mid[0]) * Math.sin(-angle) + (y - mid[1]) * Math.cos(-angle);
+    const topY = rel(top), botY = rel(bottom);
     // Tongue, lower teeth, upper teeth.
     ctx.fillStyle = '#a8454f';
     ctx.beginPath();
     ctx.ellipse(0, botY + open * 0.1, width * 0.3, open * 0.38, 0, 0, Math.PI * 2);
     ctx.fill();
     const toothH = Math.min(width * 0.12, open * 0.45);
-    const teeth = ctx.createLinearGradient(0, topY, 0, topY + toothH);
-    teeth.addColorStop(0, '#d9d2c8');
-    teeth.addColorStop(1, '#f4f0ea');
-    ctx.fillStyle = teeth;
-    ctx.fillRect(-width * 0.42, topY - 2, width * 0.84, toothH + 2);
-    ctx.strokeStyle = 'rgba(120,100,90,0.35)';
-    ctx.lineWidth = Math.max(1, width * 0.008);
-    for (let k = -3; k <= 3; k++) {
-      const x = k * width * 0.095;
-      ctx.beginPath();
-      ctx.moveTo(x, topY);
-      ctx.lineTo(x, topY + toothH);
-      ctx.stroke();
+    if (!this.face.restOpen) {
+      const teeth = ctx.createLinearGradient(0, topY, 0, topY + toothH);
+      teeth.addColorStop(0, '#d9d2c8');
+      teeth.addColorStop(1, '#f4f0ea');
+      ctx.fillStyle = teeth;
+      ctx.fillRect(-width * 0.42, topY - 2, width * 0.84, toothH + 2);
+      ctx.strokeStyle = 'rgba(120,100,90,0.35)';
+      ctx.lineWidth = Math.max(1, width * 0.008);
+      for (let k = -3; k <= 3; k++) {
+        const x = k * width * 0.095;
+        ctx.beginPath();
+        ctx.moveTo(x, topY);
+        ctx.lineTo(x, topY + toothH);
+        ctx.stroke();
+      }
     }
     ctx.fillStyle = 'rgba(225,218,208,0.55)';
     ctx.fillRect(-width * 0.32, botY - Math.min(width * 0.05, open * 0.18), width * 0.64, width * 0.05);
+    ctx.restore();
+    if (this.face.restOpen) this.drawPhotoTeeth(ctx, pt, poly);
+  }
+
+  // Paints the image's own open mouth, following the upper lip (upper teeth sit on the upper jaw).
+  drawPhotoTeeth(ctx, pt, poly) {
+    const f = this.face;
+    const src = [78, 308, 13].map((i) => f.rest[i]);
+    const dst = [78, 308, 13].map(pt);
+    const [[x0, y0], [x1, y1], [x2, y2]] = src;
+    const det = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
+    if (Math.abs(det) < 1e-6) return;
+    // Affine map (photo px -> canvas px) through the two mouth corners and the upper lip centre.
+    const solve = (u0, u1, u2) => [
+      ((u1 - u0) * (y2 - y0) - (u2 - u0) * (y1 - y0)) / det,
+      ((u2 - u0) * (x1 - x0) - (u1 - u0) * (x2 - x0)) / det,
+    ];
+    const [a, c] = solve(dst[0][0], dst[1][0], dst[2][0]);
+    const [b, d] = solve(dst[0][1], dst[1][1], dst[2][1]);
+    const e = dst[0][0] - a * x0 - c * y0;
+    const g = dst[0][1] - b * x0 - d * y0;
+    ctx.save();
+    ctx.beginPath();
+    poly.forEach(([x, y], k) => (k ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+    ctx.closePath();
+    ctx.clip();
+    ctx.setTransform(a, b, c, d, e, g);
+    ctx.beginPath();
+    MOUTH_INNER_POLYGON.forEach((i, k) => (k ? ctx.lineTo(f.rest[i][0], f.rest[i][1]) : ctx.moveTo(f.rest[i][0], f.rest[i][1])));
+    ctx.closePath();
+    ctx.clip();
+    ctx.drawImage(this.source, 0, 0);
     ctx.restore();
   }
 }

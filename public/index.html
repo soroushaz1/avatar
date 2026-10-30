@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>My Avatar</title>
+  <meta name="description" content="Turn on your camera, see your own fantasy or realistic avatar come alive, and have it read any text aloud.">
+  <meta name="theme-color" content="#120f24">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/vendor/vazirmatn/Vazirmatn-Variable-font-face.css">
+  <link rel="stylesheet" href="/css/style.css">
+  <script src="/vendor/delaunator/delaunator.min.js" defer></script>
+  <script type="module" src="/js/app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="15" fill="url(#g)"/><circle cx="11" cy="14" r="2.4" fill="#120f24"/><circle cx="21" cy="14" r="2.4" fill="#120f24"/><path d="M10.5 20q5.5 5 11 0" stroke="#120f24" stroke-width="2.2" fill="none" stroke-linecap="round"/><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffb86b"/><stop offset="1" stop-color="#ff5d8f"/></linearGradient></defs></svg>
+      <span>My Avatar</span>
+    </a>
+    <div class="account">
+      <span id="sub-badge" class="badge" hidden></span>
+      <button id="btn-login" class="btn ghost">Log in / Sign up</button>
+      <div id="user-menu" class="user-menu" hidden>
+        <span id="user-login" class="user-login"></span>
+        <button id="btn-logout" class="btn ghost small">Log out</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="stage-col">
+      <div class="stage" id="stage" data-mode="fantasy">
+        <canvas id="char-canvas" class="layer" aria-label="Ready-made character" hidden></canvas>
+        <canvas id="mouth-canvas" class="layer"></canvas>
+        <canvas id="face-canvas" class="layer" aria-label="Your avatar"></canvas>
+        <video id="video" class="preview" playsinline muted hidden></video>
+        <div id="guide" class="guide" hidden>
+          <div class="guide-oval" id="guide-oval"></div>
+          <p class="guide-text" id="guide-text"></p>
+        </div>
+        <div id="status" class="status" hidden></div>
+        <div id="countdown" class="countdown" hidden></div>
+        <div id="overlay" class="overlay" hidden>
+          <div class="overlay-card">
+            <h2 id="overlay-title"></h2>
+            <p id="overlay-text"></p>
+            <div id="overlay-actions" class="overlay-actions"></div>
+          </div>
+        </div>
+      </div>
+      <div class="mode-switch" role="tablist" aria-label="Avatar type">
+        <button role="tab" class="mode-btn active" data-mode="fantasy" aria-selected="true">Fantasy avatar</button>
+        <button role="tab" class="mode-btn" data-mode="realistic" aria-selected="false">Realistic avatar</button>
+      </div>
+    </section>
+
+    <aside class="panel">
+      <div class="card" id="style-card">
+        <h3>Your 3D character</h3>
+        <div class="chips styles" id="styles"></div>
+        <div class="row between small muted style-foot">
+          <span>Created by AI from your photo</span>
+          <button id="btn-regenerate" class="btn ghost small" hidden>Create again</button>
+        </div>
+        <details class="more" id="characters-box">
+          <summary>Ready-made characters (no face capture needed)</summary>
+          <div class="chips" id="characters"></div>
+        </details>
+      </div>
+
+      <div class="card" id="face-card">
+        <h3>My face</h3>
+        <p class="muted small" id="face-hint">Your avatar is built from your own face. Look straight at the camera with your mouth closed.</p>
+        <div class="row wrap">
+          <button id="btn-capture" class="btn ghost">Capture again</button>
+          <label class="btn ghost file-btn">Upload a photo<input id="file-input" type="file" accept="image/*" hidden></label>
+          <button id="btn-reset-face" class="btn ghost small" hidden>Delete face</button>
+        </div>
+      </div>
+
+      <div class="card camera-card">
+        <div class="row between">
+          <div>
+            <h3>Camera</h3>
+            <p class="muted small" id="camera-state">Off</p>
+          </div>
+          <div class="row">
+            <button id="btn-preview" class="btn ghost small" hidden>Show camera</button>
+            <button id="btn-camera" class="btn ghost">Turn on</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card speak-card" id="speak-card">
+        <h3>Make your avatar talk</h3>
+        <textarea id="speak-text" maxlength="1000" rows="4" dir="auto" placeholder="Type something for your avatar to read aloud…"></textarea>
+        <div class="row between small muted">
+          <span id="char-count">0 / 1000</span>
+          <label class="speed">Speed <input type="range" id="speed" min="0.7" max="1.4" step="0.05" value="1"></label>
+        </div>
+        <div class="row">
+          <select id="voice-select" aria-label="Voice"></select>
+          <button id="btn-speak" class="btn primary grow">Speak</button>
+          <button id="btn-stop" class="btn ghost" hidden>Stop</button>
+        </div>
+        <div class="lock" id="speak-lock">
+          <div class="lock-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M7 10V7a5 5 0 0 1 10 0v3" fill="none" stroke="currentColor" stroke-width="2"/><rect x="4" y="10" width="16" height="11" rx="3" fill="currentColor"/></svg>
+          </div>
+          <p>Text-to-speech is available to <b>subscribers</b>.</p>
+          <button id="btn-subscribe" class="btn primary">Subscribe</button>
+        </div>
+      </div>
+
+      <p class="privacy">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5z" fill="currentColor"/></svg>
+        Face tracking runs entirely in your browser. Your photo is sent once to Google Gemini to create your 3D character, and only after you agree.
+      </p>
+    </aside>
+  </main>
+
+  <dialog id="auth-dialog" class="dialog">
+    <form method="dialog" id="auth-form">
+      <button type="button" class="close" data-close aria-label="Close">×</button>
+      <div class="tabs">
+        <button type="button" class="tab active" data-tab="login">Log in</button>
+        <button type="button" class="tab" data-tab="register">Sign up</button>
+      </div>
+      <label>Email or mobile number
+        <input id="auth-login" name="login" autocomplete="username" required>
+      </label>
+      <label>Password
+        <input id="auth-password" name="password" type="password" autocomplete="current-password" minlength="8" required>
+      </label>
+      <p class="error" id="auth-error" hidden></p>
+      <button type="submit" class="btn primary block" id="auth-submit">Log in</button>
+    </form>
+  </dialog>
+
+  <dialog id="plans-dialog" class="dialog wide">
+    <div>
+      <button type="button" class="close" data-close aria-label="Close">×</button>
+      <h2>Subscribe</h2>
+      <p class="muted">With a subscription, your fantasy or realistic avatar reads any text aloud in a natural voice.</p>
+      <div class="plans" id="plans"></div>
+      <p class="muted small">Secure payment via ZarinPal</p>
+    </div>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>

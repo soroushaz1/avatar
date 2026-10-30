@@ -36,6 +36,15 @@ export const config = {
     apiBase: env.ZARINPAL_API_BASE || '',
   },
 
+  gemini: {
+    apiKey: env.GEMINI_API_KEY || '',
+    model: env.GEMINI_IMAGE_MODEL || 'gemini-2.5-flash-image',
+    // Character generations per 24h: whole site / free visitor (account or IP) / subscriber.
+    dailyLimit: Number(env.AVATAR_DAILY_LIMIT || 300),
+    freeLimit: Number(env.AVATAR_FREE_LIMIT || 2),
+    subscriberLimit: Number(env.AVATAR_SUBSCRIBER_LIMIT || 20),
+  },
+
   tts: {
     url: (env.TTS_URL || 'http://127.0.0.1:5002').replace(/\/$/, ''),
     maxChars: Number(env.TTS_MAX_CHARS || 1000),
@@ -45,13 +54,13 @@ export const config = {
   plans: [
     {
       id: 'monthly',
-      title: 'اشتراک یک‌ماهه',
+      title: 'Monthly',
       days: 30,
       priceToman: Number(env.PLAN_MONTHLY_TOMAN || 99000),
     },
     {
       id: 'quarterly',
-      title: 'اشتراک سه‌ماهه',
+      title: 'Quarterly',
       days: 90,
       priceToman: Number(env.PLAN_QUARTERLY_TOMAN || 249000),
     },

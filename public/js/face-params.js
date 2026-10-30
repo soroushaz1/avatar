@@ -33,7 +33,9 @@ export function paramsFromResult(result) {
   for (const c of shapes) b[c.categoryName] = c.score;
   const p = createParams();
 
-  p.jawOpen = clamp((b.jawOpen - 0.04) * 1.25);
+  // Lips can part (e.g. a toothy smile) without the jaw dropping much.
+  const lipsApart = ((b.mouthUpperUpLeft + b.mouthUpperUpRight) / 2 + (b.mouthLowerDownLeft + b.mouthLowerDownRight) / 2) / 2;
+  p.jawOpen = clamp(Math.max((b.jawOpen - 0.04) * 1.25, lipsApart * 0.6));
   p.smile = clamp(((b.mouthSmileLeft + b.mouthSmileRight) / 2) * 1.2);
   p.pucker = clamp(Math.max(b.mouthPucker, b.mouthFunnel * 0.8) * 1.3);
   p.wide = clamp(((b.mouthStretchLeft + b.mouthStretchRight) / 2) * 2);

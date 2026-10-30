@@ -17,7 +17,7 @@ ttsRouter.get('/voices', async (_req, res) => {
 
 function requireSubscription(req, res, next) {
   if (!isSubscribed(req.user)) {
-    return res.status(402).json({ error: 'برای این قابلیت باید اشتراک تهیه کنید.' });
+    return res.status(402).json({ error: 'This feature requires a subscription.' });
   }
   next();
 }
@@ -29,9 +29,9 @@ ttsRouter.post(
   rateLimit({ windowMs: 10 * 60 * 1000, max: 40, key: (req) => `u${req.user.id}` }),
   async (req, res) => {
     const text = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
-    if (!text) return res.status(400).json({ error: 'متنی وارد نشده است.' });
+    if (!text) return res.status(400).json({ error: 'Please enter some text.' });
     if (text.length > config.tts.maxChars) {
-      return res.status(400).json({ error: `حداکثر ${config.tts.maxChars} کاراکتر مجاز است.` });
+      return res.status(400).json({ error: `Text is limited to ${config.tts.maxChars} characters.` });
     }
     try {
       const r = await fetch(`${config.tts.url}/synthesize`, {
@@ -42,14 +42,14 @@ ttsRouter.post(
       });
       if (!r.ok) {
         const err = await r.json().catch(() => ({}));
-        return res.status(r.status === 404 ? 400 : 502).json({ error: err.error === 'unknown voice' ? 'صدای انتخاب‌شده موجود نیست.' : 'تولید صدا ناموفق بود.' });
+        return res.status(r.status === 404 ? 400 : 502).json({ error: err.error === 'unknown voice' ? 'That voice is not available.' : 'Speech generation failed.' });
       }
       res.set('Content-Type', 'audio/wav');
       res.set('Cache-Control', 'no-store');
       res.send(Buffer.from(await r.arrayBuffer()));
     } catch {
       // The client falls back to the browser's own speech engine on 503.
-      res.status(503).json({ error: 'سرویس تبدیل متن به گفتار در دسترس نیست.', fallback: true });
+      res.status(503).json({ error: 'The text-to-speech service is unavailable.', fallback: true });
     }
   },
 );

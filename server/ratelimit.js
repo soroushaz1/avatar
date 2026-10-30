@@ -1,5 +1,5 @@
 // Small in-memory fixed-window rate limiter; enough for a single-process deployment.
-export function rateLimit({ windowMs, max, key = (req) => req.ip, message = 'تعداد درخواست‌ها زیاد است. کمی بعد دوباره تلاش کنید.' }) {
+export function rateLimit({ windowMs, max, key = (req) => req.ip, message = 'Too many requests. Please try again a little later.' }) {
   const hits = new Map();
 
   setInterval(() => {
