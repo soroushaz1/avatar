@@ -15,6 +15,15 @@ aloud with lip-sync (Piper text-to-speech, English and Persian voices), and down
 square or landscape, with optional subtitles). Everyone can hear a free demo sentence. Subscriptions are paid
 through ZarinPal.
 
+### Voices
+
+Piper voices run on the server for free: Persian (Amir, Gyro, both male) and English (Amy, Ryan). Piper has no
+female Persian voice, so Google's Gemini voices (Leda, Kore, Aoede, Zephyr; Persian and English, about $0.02 per
+minute of speech, `GEMINI_TTS_MODEL`) add them. Gemini reports no phoneme timings: Piper reads the same text in
+parallel and its timings are carried over by aligning the two recordings (MFCC + dynamic time warping,
+`server/align.js`). The deploy adds the phoneme-timing output to the Piper voice files once, so the voice service
+never has to patch a model in memory (which needs ~300 MB at load time).
+
 ### Lip-sync
 
 Every sound maps to one of nine mouth shapes (visemes, `public/js/visemes.js`): closed lips (m/b/p), f/v, s/t,

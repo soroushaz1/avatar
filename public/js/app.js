@@ -963,17 +963,37 @@ async function loadVoices() {
 
 function renderVoices() {
   const select = $('voice-select');
-  const label = (v) => `${['fa', 'en'].includes(v.lang) ? t(`lang_${v.lang}`) : v.lang} – ${v.name}`;
-  select.replaceChildren(new Option(t('voice_auto'), ''), ...state.voices.map((v) => new Option(label(v), v.id)));
+  const label = (v) => `${v.name}${v.gender ? ` · ${t(`gender_${v.gender}`)}` : ''}`;
+  // Free voices by language; Google's voices speak both languages.
+  const group = (title, voices) => {
+    const g = document.createElement('optgroup');
+    g.label = title;
+    g.append(...voices.map((v) => new Option(label(v), v.id)));
+    return g;
+  };
+  const piper = state.voices.filter((v) => v.engine !== 'gemini');
+  const groups = [
+    group(t('lang_fa'), piper.filter((v) => v.langs[0] === 'fa')),
+    group(t('lang_en'), piper.filter((v) => v.langs[0] === 'en')),
+    group(t('voices_google'), state.voices.filter((v) => v.engine === 'gemini')),
+  ].filter((g) => g.children.length);
+  select.replaceChildren(new Option(t('voice_auto'), ''), ...groups);
   select.value = store.get('avatar.voice', '');
   if (select.selectedIndex < 0) select.value = '';
 }
 
+// The chosen voice when it speaks the text's language (an English voice can't read Persian); otherwise a
+// voice that does, of the same kind when possible.
 function pickVoice(text) {
-  const chosen = $('voice-select').value;
-  if (chosen) return chosen;
   const lang = detectLang(text);
-  return (state.voices.find((v) => v.lang === lang) || state.voices[0])?.id || '';
+  const speaks = (v) => v.langs.includes(lang);
+  const chosen = state.voices.find((v) => v.id === $('voice-select').value);
+  if (chosen && speaks(chosen)) return chosen.id;
+  const voice = (chosen && state.voices.find((v) => speaks(v) && v.gender === chosen.gender && v.engine === chosen.engine))
+    || (chosen && state.voices.find((v) => speaks(v) && v.gender === chosen.gender))
+    || state.voices.find((v) => speaks(v) && v.engine === 'piper')
+    || state.voices.find(speaks);
+  return voice?.id || '';
 }
 
 $('voice-select').addEventListener('change', (e) => store.set('avatar.voice', e.target.value));
@@ -1063,7 +1083,7 @@ async function playDemo() {
   const btn = $('btn-demo');
   setLoading(btn, true);
   try {
-    const voice = state.voices.find((v) => v.lang === lang)?.id || '';
+    const voice = state.voices.find((v) => v.id === $('voice-select').value && v.langs.includes(lang))?.id || '';
     const speech = await api.ttsDemo(lang, voice);
     setLoading(btn, false);
     renderSpeaking('playing');

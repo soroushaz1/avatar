@@ -12,6 +12,7 @@ Phoneme timings let the browser shape the mouth for each sound (lips close on m/
 
 import argparse
 import base64
+import gc
 import io
 import json
 import logging
@@ -60,9 +61,13 @@ class VoiceStore:
                 # Small servers cannot keep every voice in memory: drop the least recently used one.
                 while len(self._loaded) >= self.max_loaded:
                     _LOGGER.info("Unloading voice %s", self._loaded.popitem(last=False)[0])
+                gc.collect()
                 _LOGGER.info("Loading voice %s", voice_id)
-                # include_alignments patches the model in memory so phoneme durations are returned.
-                self._loaded[voice_id] = PiperVoice.load(path, include_alignments=True)
+                # Phoneme durations need an extra model output. deploy/install.sh adds it to the file
+                # (marked by <voice>.onnx.aligned); otherwise the model is patched in memory, which
+                # needs a lot more memory while loading.
+                patched = Path(f"{path}.aligned").exists()
+                self._loaded[voice_id] = PiperVoice.load(path, include_alignments=not patched)
             self._loaded.move_to_end(voice_id)
             return self._loaded[voice_id]
 

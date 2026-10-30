@@ -76,7 +76,7 @@ fi
 # ---------- configuration ----------
 ENVF="$APP/shared/.env"
 touch "$ENVF"
-MANAGED='^(PORT|HOST|BASE_URL|DATA_DIR|TTS_URL|COOKIE_SECURE|TRUST_PROXY|ZARINPAL_MERCHANT_ID|ZARINPAL_SANDBOX|GEMINI_API_KEY|GEMINI_IMAGE_MODEL|PLAN_MONTHLY_TOMAN|PLAN_QUARTERLY_TOMAN|AVATAR_DAILY_LIMIT|AVATAR_FREE_LIMIT|AVATAR_SUBSCRIBER_LIMIT|AVATAR_UNLIMITED_LOGINS)='
+MANAGED='^(PORT|HOST|BASE_URL|DATA_DIR|TTS_URL|COOKIE_SECURE|TRUST_PROXY|ZARINPAL_MERCHANT_ID|ZARINPAL_SANDBOX|GEMINI_API_KEY|GEMINI_IMAGE_MODEL|GEMINI_TTS_MODEL|PLAN_MONTHLY_TOMAN|PLAN_QUARTERLY_TOMAN|AVATAR_DAILY_LIMIT|AVATAR_FREE_LIMIT|AVATAR_SUBSCRIBER_LIMIT|AVATAR_UNLIMITED_LOGINS)='
 {
   grep -Ev "$MANAGED" "$ENVF" || true # keep any settings added by hand
   echo "PORT=$APP_PORT"
@@ -88,7 +88,7 @@ MANAGED='^(PORT|HOST|BASE_URL|DATA_DIR|TTS_URL|COOKIE_SECURE|TRUST_PROXY|ZARINPA
   echo "TRUST_PROXY=true"
   echo "ZARINPAL_MERCHANT_ID=${ZARINPAL_MERCHANT_ID:-}"
   echo "GEMINI_API_KEY=${GEMINI_API_KEY:-}"
-  for v in ZARINPAL_SANDBOX GEMINI_IMAGE_MODEL PLAN_MONTHLY_TOMAN PLAN_QUARTERLY_TOMAN AVATAR_DAILY_LIMIT AVATAR_FREE_LIMIT AVATAR_SUBSCRIBER_LIMIT AVATAR_UNLIMITED_LOGINS; do
+  for v in ZARINPAL_SANDBOX GEMINI_IMAGE_MODEL GEMINI_TTS_MODEL PLAN_MONTHLY_TOMAN PLAN_QUARTERLY_TOMAN AVATAR_DAILY_LIMIT AVATAR_FREE_LIMIT AVATAR_SUBSCRIBER_LIMIT AVATAR_UNLIMITED_LOGINS; do
     [ -n "${!v:-}" ] && echo "$v=${!v}"
   done
 } > "$ENVF.new"
@@ -122,6 +122,24 @@ for voice in "${VOICES[@]}"; do
       || warn "Voice $voice could not be downloaded"
   fi
 done
+# Lip-sync needs the time of every phoneme, one extra output of the voice model. It is added to the files
+# once here: adding it in memory on every load needs more memory than this server has.
+to_patch=()
+for voice in "${VOICES[@]}"; do
+  model="$APP/shared/voices/$voice.onnx"
+  [ -f "$model" ] && [ ! -f "$model.aligned" ] && to_patch+=("$model")
+done
+if [ ${#to_patch[@]} -gt 0 ]; then
+  systemctl stop avatar-tts 2>/dev/null || true
+  for model in "${to_patch[@]}"; do
+    log "Adding phoneme timings to $(basename "$model")"
+    if "$VENV/bin/python" -m piper.patch_voice_with_alignment "$model" >/dev/null 2>&1; then
+      touch "$model.aligned"
+    else
+      warn "Could not add phoneme timings to $(basename "$model")"
+    fi
+  done
+fi
 
 # ---------- services ----------
 cat > /etc/systemd/system/avatar-tts.service <<EOF

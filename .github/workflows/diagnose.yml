@@ -30,9 +30,10 @@ jobs:
               | awk '{ split($0, q, "\""); print $4, $5, q[2], $9, $10 }'
           done
           echo "== speech with phoneme timings (demo sentence)"
-          for l in fa en; do
-            curl -s -m 120 -X POST -H 'Content-Type: application/json' -d "{\"lang\":\"$l\"}" http://127.0.0.1:3000/api/tts/demo \
-              | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{const j=JSON.parse(s);console.log(process.argv[1], j.mime||"", "audio chars:", (j.audio||"").length, "phonemes:", (j.phonemes||[]).length, JSON.stringify((j.phonemes||[]).slice(0,6)), j.error||"")}catch{console.log(process.argv[1], "bad response:", s.slice(0,200))}})' "$l"
+          for v in fa:fa_IR-amir-medium en:en_US-amy-medium fa:gemini-Leda; do
+            l=${v%%:*}
+            curl -s -m 180 -X POST -H 'Content-Type: application/json' -d "{\"lang\":\"$l\",\"voice\":\"${v#*:}\"}" http://127.0.0.1:3000/api/tts/demo \
+              | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{const j=JSON.parse(s);console.log(process.argv[1], j.mime||"", "audio chars:", (j.audio||"").length, "phonemes:", (j.phonemes||[]).length, JSON.stringify((j.phonemes||[]).slice(0,6)), j.error||"")}catch{console.log(process.argv[1], "bad response:", s.slice(0,200))}})' "$v"
           done
           echo "== memory"; free -h | sed -n 2,3p
           ps -o rss=,comm= -C python3,node | awk '{printf "%s %d MB\n", $2, $1/1024}'

@@ -39,6 +39,8 @@ export const config = {
   gemini: {
     apiKey: env.GEMINI_API_KEY || '',
     model: env.GEMINI_IMAGE_MODEL || 'gemini-2.5-flash-image',
+    // Speech (female voices): see the Gemini TTS check workflow for the models available to the key.
+    ttsModel: env.GEMINI_TTS_MODEL || 'gemini-2.5-flash-preview-tts',
     // Override only for testing against a mock API.
     apiBase: (env.GEMINI_API_BASE || 'https://generativelanguage.googleapis.com').replace(/\/$/, ''),
     // Character generations per 24h: whole site / free visitor (account or IP) / subscriber.
