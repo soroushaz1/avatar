@@ -4,3 +4,4 @@ data/
 *.log
 tts/voices/
 tts/.venv/
+__pycache__/
