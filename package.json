@@ -9,10 +9,9 @@
     "node": ">=22.13"
   },
   "scripts": {
-    "start": "node server/index.js",
-    "dev": "node --watch server/index.js",
-    "setup": "node scripts/fetch-assets.js",
-    "grant": "node server/cli/grant-subscription.js"
+    "start": "node --disable-warning=ExperimentalWarning server/index.js",
+    "dev": "node --disable-warning=ExperimentalWarning --watch server/index.js",
+    "grant": "node --disable-warning=ExperimentalWarning server/cli/grant-subscription.js"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "^1.2.0",

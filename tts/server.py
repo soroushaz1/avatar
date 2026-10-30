@@ -12,6 +12,7 @@ import json
 import logging
 import threading
 import wave
+from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -22,9 +23,10 @@ MAX_CHARS = 2000
 
 
 class VoiceStore:
-    def __init__(self, voices_dir: Path):
+    def __init__(self, voices_dir: Path, max_loaded: int):
         self.voices_dir = voices_dir
-        self._loaded: dict[str, PiperVoice] = {}
+        self.max_loaded = max(1, max_loaded)
+        self._loaded: "OrderedDict[str, PiperVoice]" = OrderedDict()
         self._lock = threading.Lock()
 
     def available(self) -> list[dict]:
@@ -50,8 +52,12 @@ class VoiceStore:
                 path = self.voices_dir / f"{voice_id}.onnx"
                 if path.parent != self.voices_dir or not path.exists():
                     raise KeyError(voice_id)
+                # Small servers cannot keep every voice in memory: drop the least recently used one.
+                while len(self._loaded) >= self.max_loaded:
+                    _LOGGER.info("Unloading voice %s", self._loaded.popitem(last=False)[0])
                 _LOGGER.info("Loading voice %s", voice_id)
                 self._loaded[voice_id] = PiperVoice.load(path)
+            self._loaded.move_to_end(voice_id)
             return self._loaded[voice_id]
 
 
@@ -110,10 +116,11 @@ def main():
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=5002)
     parser.add_argument("--voices-dir", default=str(Path(__file__).parent / "voices"))
+    parser.add_argument("--max-loaded", type=int, default=2, help="Voices kept in memory at once")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
 
-    store = VoiceStore(Path(args.voices_dir).resolve())
+    store = VoiceStore(Path(args.voices_dir).resolve(), args.max_loaded)
     _LOGGER.info("Voices: %s", [v["id"] for v in store.available()])
     server = ThreadingHTTPServer((args.host, args.port), make_handler(store, threading.Lock()))
     _LOGGER.info("Listening on http://%s:%s", args.host, args.port)
