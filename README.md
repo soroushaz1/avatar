@@ -5,10 +5,12 @@ Visitors turn on their webcam and see their avatar come alive:
 - **Fantasy avatar**: a 3D animated character generated from the visitor's own photo with Google Gemini
   (styles: 3D Animated, Fantasy Elf, Superhero, Anime). Ready-made characters (fox, robot, alien, bear)
   are available for people who don't want to use their face.
-- **Realistic avatar**: the live camera; when it reads text, the visitor's own photo with real frames of their
-  mouth (recorded once with an on-screen guide, one per mouth shape).
+- **Realistic avatar**: the visitor's own photo, talking with real frames of their mouth (recorded once with an
+  on-screen guide, one per mouth shape).
 
-Both follow the visitor's head, eyes and mouth in real time. Subscribers can type text and the avatar reads it
+Once made, the avatar stays in place (it only blinks and sways slightly on its own) and does not copy the
+visitor's head; the camera is only used to capture the face and record the mouth shapes, and turns off
+afterwards. Subscribers can type text and the avatar reads it
 aloud with lip-sync (Piper text-to-speech, English and Persian voices), and download it as a video (portrait,
 square or landscape, with optional subtitles). Everyone can hear a free demo sentence. Subscriptions are paid
 through ZarinPal.

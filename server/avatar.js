@@ -8,8 +8,11 @@ import { db, now, isSubscribed } from './db.js';
 import { msg } from './i18n.js';
 
 const IDENTITY = `The character must be instantly recognizable as this exact person: keep the same face shape, \
-skin tone, eye color, eyebrows, nose, hairstyle and hair color, facial hair, glasses and accessories, and similar \
-clothing. Keep the same head position, head size, camera framing and pose as the photo: head and shoulders, facing \
+skin tone, eye color, eyebrows, nose, hairstyle and hair color, facial hair and similar clothing. Show only what \
+the person actually wears in the photo and add nothing: glasses only if the person wears glasses in the photo \
+(then the same glasses), otherwise no eyeglasses, sunglasses or goggles at all, and no hats, masks, jewelry or \
+face paint that are not in the photo. \
+Keep the same head position, head size, camera framing and pose as the photo: head and shoulders, facing \
 the camera and looking straight into the lens, with a neutral relaxed expression, mouth closed and eyes open. \
 A single character only. No text, no watermark, no border.`;
 
@@ -35,9 +38,9 @@ export const AVATAR_STYLES = {
 // The same character with the mouth in each viseme (see public/js/visemes.js); the browser morphs
 // between them in time with the speech. The closed-mouth character itself is the "m/b/p" shape.
 const KEEP = `Edit this image and change only the mouth. Keep everything else exactly the same: the same \
-character, face, eyes (open, looking straight at the camera), eyebrows, hair, glasses, facial hair, clothing, \
-colors, lighting, background, camera framing, head position and head size. The expression stays neutral and \
-relaxed, as in the middle of calm, natural speech.`;
+character, face, eyes (open, looking straight at the camera), eyebrows, hair, facial hair, clothing, colors, \
+lighting, background, camera framing, head position and head size. Do not add or remove anything (no new \
+glasses or accessories). The expression stays neutral and relaxed, as in the middle of calm, natural speech.`;
 const VISEMES = {
   FF: 'The upper front teeth rest lightly on the lower lip, as when saying "f" or "v". The mouth is barely open.',
   SS: 'The lips are slightly parted and a little spread, with the upper and lower teeth together and visible, as when saying "s".',

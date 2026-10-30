@@ -76,7 +76,7 @@ export function smoothParams(current, target, dt, speed = 18) {
   return current;
 }
 
-// Gentle life-like motion used when no face is being tracked.
+// Gentle life-like motion: blinks and a slight sway of the head.
 export class IdleAnimator {
   constructor() {
     this.t = 0;
@@ -99,10 +99,10 @@ export class IdleAnimator {
     }
     p.blinkA = p.blinkB = blink;
     if (head) {
-      p.yaw = Math.sin(this.t * 0.5) * 0.08;
-      p.pitch = Math.sin(this.t * 0.37 + 1) * 0.04;
-      p.roll = Math.sin(this.t * 0.29 + 2) * 0.03;
-      p.lookX = Math.sin(this.t * 0.23) * 0.3;
+      p.yaw = Math.sin(this.t * 0.5) * 0.05;
+      p.pitch = Math.sin(this.t * 0.37 + 1) * 0.03;
+      p.roll = Math.sin(this.t * 0.29 + 2) * 0.02;
+      p.lookX = Math.sin(this.t * 0.23) * 0.1;
     }
     return p;
   }

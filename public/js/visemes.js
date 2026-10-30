@@ -73,9 +73,3 @@ export function visemeOfBlendshapes(b) {
   if (teeth > 0.22) return 'SS';
   return null;
 }
-
-// How far the mouth is into the shape it was classified as (0..1), for mirroring it on the character.
-export function visemeStrength(id, b) {
-  if (id === 'FF' || id === 'SS' || id === 'U') return 1;
-  return Math.min(1, 0.5 + (b.jawOpen || 0));
-}

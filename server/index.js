@@ -98,6 +98,8 @@ app.use('/models', express.static(path.join(ROOT, 'public/models'), longCache));
 app.use(express.static(path.join(ROOT, 'public'), { maxAge: 0 }));
 
 app.use((err, req, res, _next) => {
+  // A visitor leaving mid-download is normal, and nothing more can be sent once a response has started.
+  if (err.code === 'ECONNABORTED' || res.headersSent) return res.end();
   console.error(err);
   res.status(err.status || 500).json({ error: msg(req, 'internal_error') });
 });

@@ -4,7 +4,7 @@ import { createParams, paramsFromResult, smoothParams, IdleAnimator } from './fa
 import { FaceAvatar } from './face-avatar.js';
 import { Speaker, unlockAudio, detectLang, createRecordingDestination } from './speech.js';
 import { MouthSamples, saveSampleSet, loadSampleSet } from './mouth-samples.js';
-import { VISEME_IDS, visemeOfBlendshapes, visemeStrength } from './visemes.js';
+import { VISEME_IDS, visemeOfBlendshapes } from './visemes.js';
 import { VideoRecorder, buildCaptions, canRecordVideo } from './recorder.js';
 import { t, lang, setLanguage, applyLanguage, formatNumber, formatDate, formatDuration } from './i18n.js';
 
@@ -230,13 +230,35 @@ function syncPortrait() {
   else faceAvatar.clear();
 }
 
-// In realistic mode, while the camera sees the user and the avatar isn't reading text, the
-// realistic avatar is simply the live camera: a real face needs no drawn mouth.
-const showsLiveCamera = () => state.mode === 'realistic' && !!state.real && tracker.cameraOn && tracker.ready
-  && state.faceVisible && !speaker.speaking && !state.recording;
+// While the realistic avatar records the user's mouth shapes, the stage shows the live camera so the
+// user sees their own mouth; otherwise it shows the avatar.
+const showsLiveCamera = () => coachActive();
 let liveCameraShown = false;
 
+// Once made, the avatar does not copy the camera, so the camera is only needed to capture the face
+// and, for the realistic avatar, to record the mouth shapes. It turns on when it becomes needed and
+// off when it no longer is (the camera button still works in between).
+function cameraNeeded() {
+  if (usesCharacter()) return false;
+  if (!state.real) return true;
+  return state.mode === 'realistic' && (!mouths.ready || (tracker.cameraOn && !!nextCoachTarget()));
+}
+
+let cameraWasNeeded = null;
+function syncCamera() {
+  const needed = cameraNeeded();
+  if (needed === cameraWasNeeded) return;
+  cameraWasNeeded = needed;
+  if (needed && !tracker.cameraOn && !state.cameraError) {
+    startCamera();
+  } else if (!needed && tracker.cameraOn) {
+    tracker.stopCamera();
+    state.faceVisible = false;
+  }
+}
+
 function renderStage() {
+  syncCamera();
   syncPortrait();
   const charMode = usesCharacter();
   const capturing = needsCapture();
@@ -298,7 +320,7 @@ let mouthsApplied = null;
 function onMouthSamplesChanged() {
   clearTimeout(mouthsSaveTimer);
   mouthsSaveTimer = setTimeout(() => mouths.save(), 3000);
-  renderCoach();
+  renderStage();
 }
 
 function collectMouthSamples(landmarks, shapes, p, now, dt) {
@@ -308,7 +330,7 @@ function collectMouthSamples(landmarks, shapes, p, now, dt) {
     const want = nextCoachTarget();
     if (want !== coach.target) {
       Object.assign(coach, { target: want, since: now, held: 0 });
-      renderCoach();
+      renderStage();
     }
     // A frame counts when it is recognized as the requested shape or, after a moment, when the user
     // clearly holds some open shape (people form sounds differently).
@@ -317,7 +339,7 @@ function collectMouthSamples(landmarks, shapes, p, now, dt) {
       changed = mouths.offer(video, landmarks, shapes, p, now, want);
     } else if (now - coach.since > 12000) {
       coach.skipped.add(want); // a similar shape stands in for it
-      renderCoach();
+      renderStage();
     }
   }
   if (!changed && id) changed = mouths.offer(video, landmarks, shapes, p, now);
@@ -640,17 +662,20 @@ function autoCapture(result, p, dt) {
     else if (capture.motion > 0.3) hint = t('hint_still');
     else {
       usable = true;
-      if (p.jawOpen > 0.3) hint = t('hint_mouth');
-      else if (p.blinkA > 0.5 || p.blinkB > 0.5) hint = t('hint_eyes');
+      // The photo is the avatar's resting face: eyes open, lips closed and relaxed. After a while, slightly
+      // parted lips (e.g. a smile) are accepted so nobody gets stuck; closed eyes never are.
+      const patient = capture.usable > 5;
+      if (p.blinkA > 0.35 || p.blinkB > 0.35) hint = t('hint_eyes');
+      else if (p.jawOpen > (patient ? 0.4 : 0.25) || p.pucker > (patient ? 0.5 : 0.35)) hint = t('hint_mouth');
       else good = true;
     }
   } else {
     capture.last = null;
   }
   capture.stable = good ? capture.stable + dt : 0;
-  // A straight-on, well-framed face is good enough after a while, so nobody gets stuck (e.g. while smiling).
   capture.usable = usable ? capture.usable + dt : 0;
-  if (capture.usable > 5) capture.stable = 2;
+  // After a while of good framing, the first acceptable frame is taken without waiting.
+  if (good && capture.usable > 5) capture.stable = 2;
   if (good) hint = t('hint_hold');
   $('guide-text').textContent = hint;
   $('guide-oval').classList.toggle('good', good);
@@ -1086,54 +1111,41 @@ let last = performance.now();
 
 const blendshapesOf = (result) => Object.fromEntries((result.faceBlendshapes?.[0]?.categories || []).map((c) => [c.categoryName, c.score]));
 
-// The user's own mouth shape, smoothed, mirrored by the 3D character.
-const liveVisemes = Object.fromEntries(VISEME_IDS.map((id) => [id, 0]));
-function mirrorMouth(shapes, dt) {
-  const id = shapes ? visemeOfBlendshapes(shapes) : null;
-  const strength = id ? visemeStrength(id, shapes) : 0;
-  const k = Math.min(1, dt * 18);
-  for (const v of VISEME_IDS) liveVisemes[v] += ((v === id ? strength : 0) - liveVisemes[v]) * k;
-  return Object.entries(liveVisemes).filter(([, w]) => w > 0.01);
-}
-
 function frame(now) {
   const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
 
-  let result = null, target = null;
+  // The camera is only used to capture the face and record mouth shapes.
+  let result = null, tracking = null;
   try {
     result = tracker.detect();
-    target = result && paramsFromResult(result);
+    tracking = result && paramsFromResult(result);
   } catch (err) {
     console.warn('Tracking error', err);
   }
-  const tracked = !!target;
+  const tracked = !!tracking;
   if (tracked !== state.faceVisible) {
     state.faceVisible = tracked;
     renderCamera();
   }
   if (needsCapture() && tracker.cameraOn && faceAvatar) {
-    if (tracker.ready) autoCapture(result, target, dt);
+    if (tracker.ready) autoCapture(result, tracking, dt);
     else $('guide-text').textContent = t('loading_model', { pct: formatNumber(Math.round(state.modelProgress * 100)) });
   }
-  const shapes = tracked ? blendshapesOf(result) : null;
-  if (tracked && state.real) collectMouthSamples(result.faceLandmarks[0], shapes, target, now, dt);
+  if (tracked && state.real) collectMouthSamples(result.faceLandmarks[0], blendshapesOf(result), tracking, now, dt);
   if (showsLiveCamera() !== liveCameraShown) renderStage();
-  // While recording, the avatar moves on its own (natural idle motion) instead of copying the camera.
-  const follow = tracked && !state.recording;
-  if (!follow) target = idle.apply(createParams(), dt);
 
+  // The avatar does not copy the user's head: it blinks and moves slightly on its own, and its mouth
+  // follows the speech.
+  const target = idle.apply(createParams(), dt);
   const mouth = speaker.mouth();
   if (mouth) {
     target.jawOpen = mouth.jawOpen;
     target.wide = mouth.wide;
     target.pucker = mouth.pucker;
-    target.smile = Math.min(target.smile, 0.25);
-    if (!follow) {
-      // A small nod and brow lift on stressed syllables.
-      target.pitch += (mouth.nod ?? mouth.energy) * 0.05;
-      target.browUp = Math.max(target.browUp, (mouth.nod || 0) * 0.25);
-    }
+    // A small nod and brow lift on stressed syllables.
+    target.pitch += (mouth.nod ?? mouth.energy) * 0.05;
+    target.browUp = Math.max(target.browUp, (mouth.nod || 0) * 0.25);
   }
   smoothParams(live, target, dt, mouth ? 28 : 16);
 
@@ -1150,11 +1162,8 @@ function frame(now) {
     }
     if (!realistic && character && Object.keys(samples).length < 4) ensureCharacterMouths(state.look);
     let visemes = null;
-    if (faceAvatar.hasMouthSamples) {
-      if (mouth) visemes = mouth.visemes || [['AA', Math.min(1, mouth.jawOpen * 1.6)]];
-      else visemes = realistic ? [] : mirrorMouth(follow ? shapes : null, dt);
-    }
-    faceAvatar.update(live, dt, { relativePose: !follow, mouthFromSpeech: !!mouth, visemes });
+    if (faceAvatar.hasMouthSamples) visemes = mouth ? mouth.visemes || [['AA', Math.min(1, mouth.jawOpen * 1.6)]] : [];
+    faceAvatar.update(live, dt, { relativePose: true, mouthFromSpeech: !!mouth, visemes });
   }
   if (state.recording) state.recording.recorder.draw(recordLayers(), speaker.elapsed());
 
@@ -1197,4 +1206,3 @@ requestAnimationFrame(frame);
 refreshMe();
 loadVoices();
 loadTracking();
-startCamera();
