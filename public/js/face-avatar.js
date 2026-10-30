@@ -69,6 +69,50 @@ function distanceToPolygon(p, poly) {
   return inside ? 0 : best;
 }
 
+// Inner lip points with the outer lip point across the lip from each.
+const LIP_PAIRS = [
+  ...LIP_UPPER_INNER.map((i, k) => [i, LIP_UPPER_OUTER[k]]),
+  ...LIP_LOWER_INNER.map((i, k) => [i, LIP_LOWER_OUTER[k]]),
+  [MOUTH_CORNERS_INNER[0], MOUTH_CORNERS_OUTER[0]],
+  [MOUTH_CORNERS_INNER[1], MOUTH_CORNERS_OUTER[1]],
+];
+
+// Face tracking sometimes puts the inner lip line of a mouth image inside the mouth opening (in cartoon
+// images, at the corners most of all), and the dark inside of the mouth was then drawn on the lips. Each
+// inner lip point that is not on the lips is moved out towards the outer lip line until it reaches the
+// colour of the lips. Points already on the lips stay where they are. (pts: pixel coordinates, changed)
+function snapInnerLips(pts, canvas) {
+  let data;
+  try {
+    data = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+  } catch {
+    return;
+  }
+  const W = canvas.width, H = canvas.height;
+  const color = ([x, y]) => {
+    const i = (Math.min(H - 1, Math.max(0, Math.round(y))) * W + Math.min(W - 1, Math.max(0, Math.round(x)))) * 4;
+    return [data[i], data[i + 1], data[i + 2]];
+  };
+  const along = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+  // The lips' colour, from near the outer lip line, which tracking places well.
+  const lips = [0, 0, 0];
+  for (const [i, o] of LIP_PAIRS) color(along(pts[i], pts[o], 0.7)).forEach((v, k) => { lips[k] += v / LIP_PAIRS.length; });
+  const tolerance = 0.35 * Math.hypot(...lips);
+  const isLip = (c) => Math.hypot(c[0] - lips[0], c[1] - lips[1], c[2] - lips[2]) < tolerance;
+  for (const [i, o] of LIP_PAIRS) {
+    const p = pts[i];
+    if (isLip(color(p))) continue;
+    for (let t = 0.05; t <= 0.6; t += 0.05) {
+      const q = along(p, pts[o], t);
+      if (isLip(color(q))) {
+        p[0] = q[0];
+        p[1] = q[1];
+        break;
+      }
+    }
+  }
+}
+
 // Average colour of small patches around the given points (pixel coordinates) of a canvas.
 function meanColor(canvas, pts, ids) {
   const ctx = canvas.getContext('2d');
@@ -351,6 +395,7 @@ export class FaceAvatar {
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       const { pts } = meshPoints(landmarks, W, H);
+      snapInnerLips(pts, canvas);
       const uvs = new Float32Array(pts.length * 2);
       pts.forEach((p, i) => { uvs[i * 2] = p[0] / W; uvs[i * 2 + 1] = p[1] / H; });
       const uvBuf = gl.createBuffer();
