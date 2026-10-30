@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import express from 'express';
 import { config, ROOT } from './config.js';
@@ -61,8 +62,35 @@ const vendor = {
   vazirmatn: 'node_modules/vazirmatn',
 };
 // Vendor files and models change only with dependency upgrades; the site's own files are revalidated on
-// every load (cheap 304s), so a deploy is visible immediately.
-const longCache = { maxAge: '7d' };
+// every load (cheap 304s), so a deploy is visible immediately. X-File-Size lets the browser show
+// download progress even when the response is compressed.
+const longCache = {
+  maxAge: '7d',
+  setHeaders: (res, _file, stat) => res.set('X-File-Size', String(stat.size)),
+};
+
+// Brotli copies of the large assets, built at deploy time by scripts/precompress.mjs.
+const PRECOMPRESSED = path.join(ROOT, 'precompressed');
+const precompressed = (() => {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(PRECOMPRESSED, 'manifest.json'), 'utf8'));
+  } catch {
+    return {};
+  }
+})();
+const TYPES = { '.wasm': 'application/wasm', '.js': 'text/javascript', '.mjs': 'text/javascript', '.task': 'application/octet-stream' };
+app.use((req, res, next) => {
+  const size = precompressed[req.path];
+  if (!size || (req.method !== 'GET' && req.method !== 'HEAD') || !req.acceptsEncodings('br')) return next();
+  res.set({
+    'Content-Encoding': 'br',
+    'Content-Type': TYPES[path.extname(req.path)] || 'application/octet-stream',
+    'Vary': 'Accept-Encoding',
+    'X-File-Size': String(size),
+  });
+  res.sendFile(path.join(PRECOMPRESSED, `${req.path}.br`), { maxAge: '7d' }, (err) => err && next(err));
+});
+
 for (const [name, dir] of Object.entries(vendor)) {
   app.use(`/vendor/${name}`, express.static(path.join(ROOT, dir), longCache));
 }

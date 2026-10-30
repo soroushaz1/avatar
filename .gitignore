@@ -5,3 +5,4 @@ data/
 tts/voices/
 tts/.venv/
 __pycache__/
+precompressed/

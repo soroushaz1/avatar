@@ -19,6 +19,11 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Pre-compress large browser assets
+        run: |
+          npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+          node scripts/precompress.mjs
+
       - name: Package release
         run: tar czf "$RUNNER_TEMP/release.tgz" --exclude=./.git --exclude=./node_modules --exclude=./data --exclude=./.env --exclude=./.github .
 

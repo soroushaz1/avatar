@@ -2,12 +2,6 @@
 import * as THREE from '/vendor/three/three.module.js';
 import { mirrorParams } from './face-params.js';
 
-export const CHARACTERS = [
-  { id: 'fox', name: 'Fox' },
-  { id: 'robot', name: 'Robot' },
-  { id: 'alien', name: 'Alien' },
-  { id: 'bear', name: 'Bear' },
-];
 
 const std = (color, extra = {}) => new THREE.MeshStandardMaterial({ color, roughness: 0.6, metalness: 0, ...extra });
 

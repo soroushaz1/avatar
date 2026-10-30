@@ -1,7 +1,6 @@
 import { api } from './api.js';
-import { FaceTracker, detectImage } from './tracker.js';
+import { FaceTracker, detectImage, loadFaceAssets } from './tracker.js';
 import { createParams, paramsFromResult, smoothParams, IdleAnimator } from './face-params.js';
-import { FantasyAvatar, CHARACTERS } from './fantasy.js';
 import { FaceAvatar } from './face-avatar.js';
 import { Speaker, unlockAudio, detectLang } from './speech.js';
 import { t, lang, setLanguage, applyLanguage, formatNumber, formatDate } from './i18n.js';
@@ -32,6 +31,7 @@ const store = {
 
 const STYLE_ICONS = { animated: '🎬', elf: '🧝', hero: '🦸', anime: '🌸' };
 const CHARACTER_ICONS = { fox: '🦊', robot: '🤖', alien: '👽', bear: '🐻' };
+const CHARACTERS = Object.keys(CHARACTER_ICONS);
 
 const state = {
   user: null,
@@ -46,6 +46,8 @@ const state = {
   showPreview: store.get('avatar.preview', true),
   faceVisible: false,
   cameraError: null,
+  modelProgress: 0,
+  modelError: false,
   // Portraits the avatar can animate: the user's photo and the characters generated from it.
   real: null,
   generated: {},
@@ -57,7 +59,13 @@ const state = {
 
 const video = $('video');
 const tracker = new FaceTracker(video);
-const characters = new FantasyAvatar($('char-canvas'));
+// The ready-made 3D characters (three.js, ~300 KB) are only loaded when someone picks one.
+let characters = null;
+let charactersPromise = null;
+function showCharacter(id) {
+  charactersPromise ??= import('./fantasy.js').then(({ FantasyAvatar }) => (characters = new FantasyAvatar($('char-canvas'))));
+  charactersPromise.then((c) => c.setCharacter(id));
+}
 let faceAvatar = null;
 try {
   faceAvatar = new FaceAvatar($('face-canvas'), $('mouth-canvas'));
@@ -132,7 +140,7 @@ function imageToCanvas(img, maxSize = 1024) {
 
 // ---------- camera ----------
 function renderCamera() {
-  const on = tracker.running;
+  const on = tracker.cameraOn;
   $('btn-camera').textContent = t(on ? 'turn_off' : 'turn_on');
   $('camera-state').textContent = t(on ? (state.faceVisible ? 'camera_face' : 'camera_searching') : 'camera_off');
   $('btn-preview').hidden = !on || needsCapture();
@@ -164,8 +172,31 @@ async function startCamera() {
   }
 }
 
+// Face tracking (~6 MB, cached after the first visit) starts downloading as soon as the page opens.
+function loadTracking() {
+  state.modelError = false;
+  renderStage();
+  tracker.loadModel()
+    .catch((err) => {
+      console.warn('Face tracking failed to load', err);
+      state.modelError = true;
+    })
+    .finally(() => {
+      setStatus('');
+      renderStage();
+    });
+}
+
+loadFaceAssets((p) => {
+  state.modelProgress = p;
+  // While an avatar is already on screen, show progress in the corner instead of the capture guide.
+  if (!needsCapture() && tracker.cameraOn && !tracker.ready) {
+    setStatus(t('loading_model', { pct: formatNumber(Math.round(p * 100)) }));
+  }
+}).catch(() => {});
+
 $('btn-camera').addEventListener('click', () => {
-  if (tracker.running) {
+  if (tracker.cameraOn) {
     tracker.stopCamera();
     state.faceVisible = false;
     renderStage();
@@ -196,12 +227,12 @@ function renderStage() {
   syncPortrait();
   const charMode = usesCharacter();
   const capturing = needsCapture();
-  const live = capturing && tracker.running && !!faceAvatar;
+  const live = capturing && tracker.cameraOn && !!faceAvatar;
 
   $('stage').dataset.mode = state.mode;
   $('char-canvas').hidden = !charMode;
   for (const id of ['face-canvas', 'mouth-canvas']) $(id).hidden = charMode || !faceAvatar?.ready;
-  video.hidden = !tracker.running || (!live && !state.showPreview);
+  video.hidden = !tracker.cameraOn || (!live && !state.showPreview);
   video.classList.toggle('live', live);
   $('guide').hidden = !live;
 
@@ -231,7 +262,14 @@ function renderOverlay(capturing) {
       actions: [{ label: t('try_again'), primary: true, onClick: () => startCamera() }, upload],
     });
   }
-  if (capturing && !tracker.running) {
+  if (state.modelError && (capturing || tracker.cameraOn)) {
+    return showOverlay({
+      title: t('model_error_title'),
+      text: t('model_error_text'),
+      actions: [{ label: t('try_again'), primary: true, onClick: () => loadTracking() }, upload],
+    });
+  }
+  if (capturing && !tracker.cameraOn) {
     return showOverlay({
       title: t('create_avatar_title'),
       text: t('create_avatar_text'),
@@ -241,7 +279,7 @@ function renderOverlay(capturing) {
   if (capturing || state.mode !== 'fantasy' || usesCharacter() || state.generated[state.look]) return hideOverlay();
 
   // Fantasy mode with a captured face but no character in this style yet.
-  const readyMade = { label: t('use_ready_made'), onClick: () => setLook(`char:${CHARACTERS[0].id}`) };
+  const readyMade = { label: t('use_ready_made'), onClick: () => setLook(`char:${CHARACTERS[0]}`) };
   if (state.generating) {
     return showOverlay({ title: t('generating_title'), text: t('generating_text'), busy: true });
   }
@@ -300,7 +338,7 @@ function setLook(look) {
   state.look = look;
   state.generationError = null;
   store.set('avatar.look', look);
-  if (look.startsWith('char:')) characters.setCharacter(look.slice(5));
+  if (look.startsWith('char:')) showCharacter(look.slice(5));
   renderLooks();
   setMode('fantasy');
 }
@@ -308,8 +346,8 @@ function setLook(look) {
 function renderLooks() {
   $('styles').replaceChildren(...state.styles.map((s) =>
     chip(STYLE_ICONS[s.id] || '✨', t(`style_${s.id}`), state.look === s.id, () => setLook(s.id))));
-  $('characters').replaceChildren(...CHARACTERS.map((c) =>
-    chip(CHARACTER_ICONS[c.id] || '✨', t(`char_${c.id}`), state.look === `char:${c.id}`, () => setLook(`char:${c.id}`))));
+  $('characters').replaceChildren(...CHARACTERS.map((id) =>
+    chip(CHARACTER_ICONS[id], t(`char_${id}`), state.look === `char:${id}`, () => setLook(`char:${id}`))));
   if (state.look.startsWith('char:')) $('characters-box').open = true;
 }
 
@@ -484,7 +522,7 @@ function autoCapture(result, p, dt) {
 
 $('btn-capture').addEventListener('click', () => {
   forgetFace();
-  if (!tracker.running) startCamera();
+  if (!tracker.cameraOn) startCamera();
   renderStage();
 });
 
@@ -758,7 +796,10 @@ function frame(now) {
     state.faceVisible = tracked;
     renderCamera();
   }
-  if (needsCapture() && tracker.running && faceAvatar) autoCapture(result, target, dt);
+  if (needsCapture() && tracker.cameraOn && faceAvatar) {
+    if (tracker.ready) autoCapture(result, target, dt);
+    else $('guide-text').textContent = t('loading_model', { pct: formatNumber(Math.round(state.modelProgress * 100)) });
+  }
   if (!target) target = idle.apply(createParams(), dt);
 
   const mouth = speaker.mouth();
@@ -771,7 +812,7 @@ function frame(now) {
   }
   smoothParams(live, target, dt, mouth ? 28 : 16);
 
-  if (usesCharacter()) characters.update(live, dt);
+  if (usesCharacter()) characters?.update(live, dt);
   else if (faceAvatar?.ready) faceAvatar.update(live, dt, { relativePose: !tracked });
 
   requestAnimationFrame(frame);
@@ -802,11 +843,12 @@ renderAccount();
 handlePaymentReturn();
 setStatus(t('getting_ready'));
 await loadStyles();
-if (usesCharacter()) characters.setCharacter(state.look.slice(5));
+if (usesCharacter()) showCharacter(state.look.slice(5));
 await restorePortraits();
 setStatus('');
 renderStage();
 requestAnimationFrame(frame);
 refreshMe();
 loadVoices();
+loadTracking();
 startCamera();
