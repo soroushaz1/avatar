@@ -40,13 +40,14 @@ jobs:
           AVATAR_DAILY_LIMIT: ${{ vars.AVATAR_DAILY_LIMIT }}
           AVATAR_FREE_LIMIT: ${{ vars.AVATAR_FREE_LIMIT }}
           AVATAR_SUBSCRIBER_LIMIT: ${{ vars.AVATAR_SUBSCRIBER_LIMIT }}
+          AVATAR_UNLIMITED_LOGINS: ${{ secrets.AVATAR_UNLIMITED_LOGINS }}
         run: |
           umask 077
           mkdir -p ~/.ssh
           printf '%s\n' "$SSH_KEY" | tr -d '\r' > ~/.ssh/id_deploy
           # Settings file copied to the server (never printed); values are shell-quoted.
           for v in DOMAIN ZARINPAL_MERCHANT_ID GEMINI_API_KEY ZARINPAL_SANDBOX GEMINI_IMAGE_MODEL PLAN_MONTHLY_TOMAN \
-                   PLAN_QUARTERLY_TOMAN AVATAR_DAILY_LIMIT AVATAR_FREE_LIMIT AVATAR_SUBSCRIBER_LIMIT; do
+                   PLAN_QUARTERLY_TOMAN AVATAR_DAILY_LIMIT AVATAR_FREE_LIMIT AVATAR_SUBSCRIBER_LIMIT AVATAR_UNLIMITED_LOGINS; do
             val=$(printf '%s' "${!v}" | tr -d '\r\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             [ -n "$val" ] && printf "%s=%q\n" "$v" "$val"
           done > "$RUNNER_TEMP/deploy.env"

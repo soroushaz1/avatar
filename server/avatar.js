@@ -6,6 +6,7 @@ import sharp from 'sharp';
 import { config } from './config.js';
 import { db, now, isSubscribed } from './db.js';
 import { msg } from './i18n.js';
+import { normalizeLogin } from './auth.js';
 
 const IDENTITY = `The character must be instantly recognizable as this exact person: keep the same face shape, \
 skin tone, eye color, eyebrows, nose, hairstyle and hair color, facial hair and similar clothing. Show only what \
@@ -54,6 +55,7 @@ const VISEMES = {
 
 const DAY = 24 * 60 * 60 * 1000;
 const inFlight = new Set();
+const unlimitedLogins = new Set(config.gemini.unlimitedLogins.map(normalizeLogin).filter(Boolean));
 
 async function callGemini(prompt, mimeType, data) {
   const { apiKey, model, apiBase } = config.gemini;
@@ -103,25 +105,27 @@ const parseImage = (value) => {
   return m && { mimeType: m[1], data: m[2] };
 };
 
-// Daily quotas per visitor (account or IP) and for the whole site, to protect the API budget.
-// Runs the job when allowed; a failed job does not count against the quota.
+// Daily quotas per visitor (account or IP) and for the whole site, to protect the API budget; accounts in
+// AVATAR_UNLIMITED_LOGINS have none. Runs the job when allowed; a failed job does not count.
 async function withQuota(req, res, style, job) {
   if (!config.gemini.apiKey) return res.status(503).json({ error: msg(req, 'generation_unavailable') });
   const since = now() - DAY;
   const who = req.user ? ['user_id', req.user.id] : ['ip', req.ip];
   const key = `${who[0]}:${who[1]}`;
   const { gemini } = config;
-  const total = db.prepare('SELECT COUNT(*) AS n FROM generations WHERE created_at > ?').get(since).n;
-  if (total >= gemini.dailyLimit) {
-    return res.status(429).json({ error: msg(req, 'daily_cap') });
-  }
-  const mine = db.prepare(`SELECT COUNT(*) AS n FROM generations WHERE ${who[0]} = ? AND created_at > ?`).get(who[1], since).n;
-  const limit = isSubscribed(req.user) ? gemini.subscriberLimit : gemini.freeLimit;
-  if (mine >= limit) {
-    return res.status(429).json({
-      error: msg(req, isSubscribed(req.user) ? 'subscriber_limit' : 'free_limit', { limit }),
-      upgrade: !isSubscribed(req.user),
-    });
+  if (!unlimitedLogins.has(req.user?.login)) {
+    const total = db.prepare('SELECT COUNT(*) AS n FROM generations WHERE created_at > ?').get(since).n;
+    if (total >= gemini.dailyLimit) {
+      return res.status(429).json({ error: msg(req, 'daily_cap') });
+    }
+    const mine = db.prepare(`SELECT COUNT(*) AS n FROM generations WHERE ${who[0]} = ? AND created_at > ?`).get(who[1], since).n;
+    const limit = isSubscribed(req.user) ? gemini.subscriberLimit : gemini.freeLimit;
+    if (mine >= limit) {
+      return res.status(429).json({
+        error: msg(req, isSubscribed(req.user) ? 'subscriber_limit' : 'free_limit', { limit }),
+        upgrade: !isSubscribed(req.user),
+      });
+    }
   }
   if (inFlight.has(key)) return res.status(429).json({ error: msg(req, 'generation_in_progress') });
 

@@ -46,6 +46,8 @@ export const config = {
     dailyLimit: Number(env.AVATAR_DAILY_LIMIT || 100),
     freeLimit: Number(env.AVATAR_FREE_LIMIT || 2),
     subscriberLimit: Number(env.AVATAR_SUBSCRIBER_LIMIT || 20),
+    // Accounts (comma-separated logins, e.g. the site owner) without any daily limit.
+    unlimitedLogins: (env.AVATAR_UNLIMITED_LOGINS || '').split(',').map((s) => s.trim()).filter(Boolean),
   },
 
   tts: {
