@@ -5,6 +5,7 @@ import { sessionMiddleware, authRouter } from './auth.js';
 import { paymentRouter } from './payment.js';
 import { ttsRouter } from './tts.js';
 import { avatarRouter } from './avatar.js';
+import { langMiddleware, msg } from './i18n.js';
 
 const app = express();
 app.disable('x-powered-by');
@@ -33,12 +34,13 @@ app.use((_req, res, next) => {
   next();
 });
 
+app.use(langMiddleware);
 app.use(sessionMiddleware);
 
 // Reject cross-site state-changing requests (cookies are SameSite=Lax, this is defence in depth).
 app.use('/api', (req, res, next) => {
   if (req.method === 'GET' || req.method === 'HEAD') return next();
-  if (!req.is('application/json')) return res.status(415).json({ error: 'Unsupported content type' });
+  if (!req.is('application/json')) return res.status(415).json({ error: msg(req, 'unsupported_type') });
   next();
 });
 
@@ -49,7 +51,7 @@ app.use(express.json({ limit: '32kb' }));
 app.use('/api/auth', authRouter);
 app.use('/api/pay', paymentRouter);
 app.use('/api/tts', ttsRouter);
-app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found' }));
+app.use('/api', (req, res) => res.status(404).json({ error: msg(req, 'not_found') }));
 
 // Third-party browser libraries are served from node_modules so the site works without any CDN.
 const vendor = {
@@ -65,9 +67,9 @@ for (const [name, dir] of Object.entries(vendor)) {
 app.use('/models', express.static(path.join(ROOT, 'public/models'), longCache));
 app.use(express.static(path.join(ROOT, 'public'), { maxAge: '1h' }));
 
-app.use((err, _req, res, _next) => {
+app.use((err, req, res, _next) => {
   console.error(err);
-  res.status(err.status || 500).json({ error: 'Internal server error' });
+  res.status(err.status || 500).json({ error: msg(req, 'internal_error') });
 });
 
 app.listen(config.port, config.host, () => {

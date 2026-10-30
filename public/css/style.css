@@ -29,6 +29,11 @@ body {
   line-height: 1.6;
 }
 
+html[lang='fa'] body {
+  font-family: 'Vazirmatn', system-ui, -apple-system, 'Segoe UI', Tahoma, sans-serif;
+  line-height: 1.7;
+}
+
 button, input, select, textarea { font: inherit; color: inherit; }
 
 [hidden] { display: none !important; }
@@ -71,6 +76,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   border: 2px solid #1c0d18; border-top-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite;
 }
 .file-btn { display: inline-flex; align-items: center; }
+.lang-btn { font-weight: 700; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* ---------- layout ---------- */
@@ -106,7 +112,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .layer { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 
 .preview.live {
-  inset: 0; bottom: auto; left: auto;
+  inset: 0;
   width: 100%; height: 100%; aspect-ratio: auto;
   border: 0; border-radius: 0; box-shadow: none; z-index: 1;
 }
@@ -136,7 +142,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .preview {
   position: absolute;
   bottom: 14px;
-  left: 14px;
+  inset-inline-start: 14px;
   width: clamp(96px, 22%, 200px);
   aspect-ratio: 4 / 3;
   object-fit: cover;
@@ -150,7 +156,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .status {
   position: absolute;
   top: 14px;
-  right: 14px;
+  inset-inline-end: 14px;
   z-index: 3;
   padding: 5px 12px;
   font-size: 0.85rem;
@@ -276,7 +282,7 @@ select option { background: var(--bg-2); }
 .dialog label { display: block; margin: 12px 0; font-size: 0.9rem; color: var(--muted); }
 .dialog label input { margin-top: 4px; color: var(--text); }
 .close {
-  position: absolute; top: 12px; right: 14px;
+  position: absolute; top: 12px; inset-inline-end: 14px;
   border: 0; background: transparent; font-size: 1.6rem; line-height: 1; cursor: pointer; color: var(--muted);
 }
 .tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 8px 0 4px; padding: 4px; border-radius: 12px; background: rgba(0, 0, 0, 0.25); }

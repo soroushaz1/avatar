@@ -1,13 +1,15 @@
+import { lang, t } from './i18n.js';
+
 async function request(method, url, body, { binary = false } = {}) {
   const res = await fetch(url, {
     method,
     credentials: 'same-origin',
-    headers: body ? { 'Content-Type': 'application/json' } : {},
+    headers: { 'X-Lang': lang, ...(body ? { 'Content-Type': 'application/json' } : {}) },
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw Object.assign(new Error(data.error || 'خطا در ارتباط با سرور'), { status: res.status, data });
+    throw Object.assign(new Error(data.error || t('network_error')), { status: res.status, data });
   }
   return binary ? res.arrayBuffer() : res.json();
 }

@@ -4,10 +4,9 @@ import { createParams, paramsFromResult, smoothParams, IdleAnimator } from './fa
 import { FantasyAvatar, CHARACTERS } from './fantasy.js';
 import { FaceAvatar } from './face-avatar.js';
 import { Speaker, unlockAudio, detectLang } from './speech.js';
+import { t, lang, setLanguage, applyLanguage, formatNumber, formatDate } from './i18n.js';
 
 const $ = (id) => document.getElementById(id);
-const num = new Intl.NumberFormat('en-US');
-const date = new Intl.DateTimeFormat('en-US', { dateStyle: 'medium' });
 
 const store = {
   get(key, fallback) {
@@ -134,31 +133,30 @@ function imageToCanvas(img, maxSize = 1024) {
 // ---------- camera ----------
 function renderCamera() {
   const on = tracker.running;
-  $('btn-camera').textContent = on ? 'Turn off' : 'Turn on';
-  $('camera-state').textContent = on ? (state.faceVisible ? 'On — face detected' : 'On — looking for your face…') : 'Off';
+  $('btn-camera').textContent = t(on ? 'turn_off' : 'turn_on');
+  $('camera-state').textContent = t(on ? (state.faceVisible ? 'camera_face' : 'camera_searching') : 'camera_off');
   $('btn-preview').hidden = !on || needsCapture();
-  $('btn-preview').textContent = state.showPreview ? 'Hide camera' : 'Show camera';
+  $('btn-preview').textContent = t(state.showPreview ? 'hide_camera' : 'show_camera');
 }
 
 const CAMERA_ERRORS = {
-  NotAllowedError: ['Camera access was blocked', 'Allow camera access from your browser\'s address bar so your avatar can be built and follow your face. You can also upload a photo instead.'],
-  NotFoundError: ['No camera found', 'Connect a webcam or open the site on your phone. You can also upload a front-facing photo instead.'],
-  NotReadableError: ['The camera is busy', 'Another app is probably using your camera. Close it and try again.'],
-  NotSupportedError: ['Camera not supported', 'Open the site over https in an up-to-date Chrome, Edge, Firefox or Safari.'],
+  NotAllowedError: 'err_blocked',
+  NotFoundError: 'err_notfound',
+  NotReadableError: 'err_busy',
+  NotSupportedError: 'err_unsupported',
 };
 
 async function startCamera() {
   state.cameraError = null;
   $('btn-camera').disabled = true;
-  setStatus('Starting camera…');
+  setStatus(t('starting_camera'));
   try {
     if (!window.isSecureContext) throw Object.assign(new Error('insecure'), { name: 'NotSupportedError' });
     await tracker.startCamera();
   } catch (err) {
     console.warn('Camera error', err);
     tracker.stopCamera();
-    const [title, text] = CAMERA_ERRORS[err.name] || ['Could not start the camera', 'Please try again, or upload a front-facing photo instead.'];
-    state.cameraError = { title, text };
+    state.cameraError = CAMERA_ERRORS[err.name] || 'err_camera';
   } finally {
     $('btn-camera').disabled = false;
     setStatus('');
@@ -214,7 +212,7 @@ function renderStage() {
   });
   $('style-card').hidden = state.mode !== 'fantasy';
   $('btn-reset-face').hidden = !state.real;
-  $('btn-capture').textContent = state.real ? 'Capture again' : 'Capture from camera';
+  $('btn-capture').textContent = t(state.real ? 'capture_again' : 'capture_from_camera');
   $('btn-regenerate').hidden = charMode || !state.generated[state.look] || !!state.generating;
 
   renderOverlay(capturing);
@@ -222,51 +220,55 @@ function renderStage() {
 }
 
 function renderOverlay(capturing) {
-  const upload = { label: 'Upload a photo', onClick: () => $('file-input').click() };
+  const upload = { label: t('upload_photo'), onClick: () => $('file-input').click() };
   if (capturing && !faceAvatar) {
-    return showOverlay({ title: 'Your browser does not support WebGL', text: 'Try one of the ready-made characters, or open the site in another browser.' });
+    return showOverlay({ title: t('no_webgl_title'), text: t('no_webgl_text') });
   }
   if (capturing && state.cameraError) {
-    return showOverlay({ ...state.cameraError, actions: [{ label: 'Try again', primary: true, onClick: () => startCamera() }, upload] });
+    return showOverlay({
+      title: t(`${state.cameraError}_title`),
+      text: t(`${state.cameraError}_text`),
+      actions: [{ label: t('try_again'), primary: true, onClick: () => startCamera() }, upload],
+    });
   }
   if (capturing && !tracker.running) {
     return showOverlay({
-      title: 'Create your avatar',
-      text: 'Your avatar is made from your own face. Turn on your camera, or upload a front-facing photo.',
-      actions: [{ label: 'Turn on camera', primary: true, onClick: () => startCamera() }, upload],
+      title: t('create_avatar_title'),
+      text: t('create_avatar_text'),
+      actions: [{ label: t('turn_on_camera'), primary: true, onClick: () => startCamera() }, upload],
     });
   }
   if (capturing || state.mode !== 'fantasy' || usesCharacter() || state.generated[state.look]) return hideOverlay();
 
   // Fantasy mode with a captured face but no character in this style yet.
-  const readyMade = { label: 'Use a ready-made character', onClick: () => setLook(`char:${CHARACTERS[0].id}`) };
+  const readyMade = { label: t('use_ready_made'), onClick: () => setLook(`char:${CHARACTERS[0].id}`) };
   if (state.generating) {
-    return showOverlay({ title: 'Creating your 3D character…', text: 'This usually takes 10–20 seconds. Meanwhile, this is your realistic avatar.', busy: true });
+    return showOverlay({ title: t('generating_title'), text: t('generating_text'), busy: true });
   }
   if (!state.generationAvailable) {
     return showOverlay({
-      title: '3D characters are coming soon',
-      text: 'Character creation is not switched on yet. Try your realistic avatar or a ready-made character for now.',
-      actions: [{ label: 'Realistic avatar', primary: true, onClick: () => setMode('realistic') }, readyMade],
+      title: t('soon_title'),
+      text: t('soon_text'),
+      actions: [{ label: t('realistic_avatar'), primary: true, onClick: () => setMode('realistic') }, readyMade],
     });
   }
   if (state.generationError) {
     const { message, upgrade } = state.generationError;
     return showOverlay({
-      title: 'Your character could not be created',
+      title: t('failed_title'),
       text: message,
       actions: upgrade
-        ? [{ label: 'Subscribe', primary: true, onClick: () => subscribe() }, readyMade]
-        : [{ label: 'Try again', primary: true, onClick: () => generateCharacter(state.look) }, readyMade],
+        ? [{ label: t('subscribe'), primary: true, onClick: () => subscribe() }, readyMade]
+        : [{ label: t('try_again'), primary: true, onClick: () => generateCharacter(state.look) }, readyMade],
     });
   }
   if (!state.consent) {
     return showOverlay({
-      title: 'Turn yourself into a 3D character',
-      text: 'We send your captured photo once to Google Gemini, which creates a 3D animated character that looks like you. The photo is not stored on our server.',
+      title: t('consent_title'),
+      text: t('consent_text'),
       actions: [
-        { label: 'Create my character', primary: true, onClick: () => { state.consent = true; store.set('avatar.consent', true); generateCharacter(state.look); } },
-        { label: 'Not now', onClick: () => setMode('realistic') },
+        { label: t('create_my_character'), primary: true, onClick: () => { state.consent = true; store.set('avatar.consent', true); generateCharacter(state.look); } },
+        { label: t('not_now'), onClick: () => setMode('realistic') },
       ],
     });
   }
@@ -305,9 +307,9 @@ function setLook(look) {
 
 function renderLooks() {
   $('styles').replaceChildren(...state.styles.map((s) =>
-    chip(STYLE_ICONS[s.id] || '✨', s.name, state.look === s.id, () => setLook(s.id))));
+    chip(STYLE_ICONS[s.id] || '✨', t(`style_${s.id}`), state.look === s.id, () => setLook(s.id))));
   $('characters').replaceChildren(...CHARACTERS.map((c) =>
-    chip(CHARACTER_ICONS[c.id] || '✨', c.name, state.look === `char:${c.id}`, () => setLook(`char:${c.id}`))));
+    chip(CHARACTER_ICONS[c.id] || '✨', t(`char_${c.id}`), state.look === `char:${c.id}`, () => setLook(`char:${c.id}`))));
   if (state.look.startsWith('char:')) $('characters-box').open = true;
 }
 
@@ -380,11 +382,11 @@ function forgetFace() {
 async function useNewPhoto(canvas, mirrored) {
   const portrait = await makePortrait(canvas, mirrored);
   if (!portrait) {
-    toast('No face found in the picture. Try a clear, front-facing photo.', 'err');
+    toast(t('no_face'), 'err');
     return false;
   }
   if (Math.abs(portrait.restPose.yaw) > 0.35 || Math.abs(portrait.restPose.pitch) > 0.35) {
-    toast('For best results, use a photo where you look straight at the camera.', 'err', 6000);
+    toast(t('look_straight'), 'err', 6000);
   }
   forgetFace();
   state.real = portrait;
@@ -418,10 +420,10 @@ async function generateCharacter(style) {
   try {
     const { image } = await api.generateAvatar(portraitCrop(state.real), style);
     const portrait = await makePortrait(imageToCanvas(await loadImage(image)), state.real.mirrored);
-    if (!portrait) throw new Error('We could not find a face in the generated character. Please try again.');
+    if (!portrait) throw new Error(t('no_face_generated'));
     state.generated[style] = portrait;
     savePortrait(charKey(style), portrait);
-    if (state.look === style) toast('Here you are! Move your head, blink, or make your avatar talk.', 'ok');
+    if (state.look === style) toast(t('character_ready'), 'ok');
   } catch (err) {
     console.warn('Character generation failed', err);
     if (err.status === 503) state.generationAvailable = false;
@@ -443,17 +445,17 @@ const capture = { stable: 0, usable: 0, busy: false };
 
 function autoCapture(result, p, dt) {
   const lm = result?.faceLandmarks?.[0];
-  let hint = 'Bring your face into the frame';
+  let hint = t('hint_frame');
   let good = false, usable = false;
   if (p && lm) {
     const xs = lm.map((q) => q.x);
     const width = Math.max(...xs) - Math.min(...xs);
-    if (width < 0.16) hint = 'Come a little closer to the camera';
-    else if (Math.abs(p.yaw) > 0.25 || Math.abs(p.pitch) > 0.3 || Math.abs(p.roll) > 0.25) hint = 'Look straight at the camera';
+    if (width < 0.16) hint = t('hint_closer');
+    else if (Math.abs(p.yaw) > 0.25 || Math.abs(p.pitch) > 0.3 || Math.abs(p.roll) > 0.25) hint = t('hint_straight');
     else {
       usable = true;
-      if (p.jawOpen > 0.3) hint = 'Close your mouth';
-      else if (p.blinkA > 0.5 || p.blinkB > 0.5) hint = 'Keep your eyes open';
+      if (p.jawOpen > 0.3) hint = t('hint_mouth');
+      else if (p.blinkA > 0.5 || p.blinkB > 0.5) hint = t('hint_eyes');
       else good = true;
     }
   }
@@ -461,17 +463,17 @@ function autoCapture(result, p, dt) {
   // A straight-on face is good enough after a while, so nobody gets stuck (e.g. while smiling).
   capture.usable = usable ? capture.usable + dt : 0;
   if (capture.usable > 5) capture.stable = 2;
-  if (good) hint = 'Great! Hold still for a moment…';
+  if (good) hint = t('hint_hold');
   $('guide-text').textContent = hint;
   $('guide-oval').classList.toggle('good', good);
   if (capture.stable > 1 && !capture.busy) {
     capture.busy = true;
     capture.stable = capture.usable = 0;
-    $('guide-text').textContent = 'Got it!';
+    $('guide-text').textContent = t('hint_done');
     useNewPhoto(tracker.grabFrame(), true)
       .catch((err) => {
         console.error(err);
-        toast('Something went wrong. Let\'s try again.', 'err');
+        toast(t('capture_failed'), 'err');
       })
       .finally(() => {
         capture.busy = false;
@@ -490,13 +492,13 @@ $('file-input').addEventListener('change', async (e) => {
   const file = e.target.files?.[0];
   e.target.value = '';
   if (!file || !faceAvatar) return;
-  setStatus('Reading your photo…');
+  setStatus(t('reading_photo'));
   const url = URL.createObjectURL(file);
   try {
-    if (await useNewPhoto(imageToCanvas(await loadImage(url)), false)) toast('Photo added!', 'ok');
+    if (await useNewPhoto(imageToCanvas(await loadImage(url)), false)) toast(t('photo_added'), 'ok');
   } catch (err) {
     console.error(err);
-    toast('That photo could not be read.', 'err');
+    toast(t('photo_unreadable'), 'err');
   } finally {
     URL.revokeObjectURL(url);
     setStatus('');
@@ -526,7 +528,7 @@ function renderAccount() {
   $('user-login').textContent = u?.login || '';
   const badge = $('sub-badge');
   badge.hidden = !u?.subscribed;
-  if (u?.subscribed) badge.textContent = `Subscribed until ${date.format(new Date(u.subscriptionExpiresAt))}`;
+  if (u?.subscribed) badge.textContent = t('subscribed_until', { date: formatDate(new Date(u.subscriptionExpiresAt)) });
   $('speak-lock').hidden = !!u?.subscribed;
 }
 
@@ -550,7 +552,7 @@ function openAuth(tab = 'login', afterLogin = null) {
 function setAuthTab(tab) {
   state.authTab = tab;
   document.querySelectorAll('#auth-dialog .tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === tab));
-  $('auth-submit').textContent = tab === 'login' ? 'Log in' : 'Create account';
+  $('auth-submit').textContent = t(tab === 'login' ? 'login' : 'create_account');
   $('auth-password').autocomplete = tab === 'login' ? 'current-password' : 'new-password';
 }
 
@@ -570,7 +572,7 @@ $('auth-form').addEventListener('submit', async (e) => {
     renderAccount();
     $('auth-dialog').close();
     $('auth-password').value = '';
-    toast(state.authTab === 'login' ? 'Welcome back!' : 'Your account is ready.', 'ok');
+    toast(t(state.authTab === 'login' ? 'welcome_back' : 'account_ready'), 'ok');
     const next = state.afterLogin;
     state.afterLogin = null;
     next?.();
@@ -594,20 +596,22 @@ function renderPlans() {
     const el = document.createElement('div');
     el.className = `plan${i === state.plans.length - 1 && state.plans.length > 1 ? ' featured' : ''}`;
     const h = document.createElement('h4');
-    h.textContent = plan.title;
+    h.textContent = t(`plan_${plan.id}`) === `plan_${plan.id}` ? plan.title : t(`plan_${plan.id}`);
     const price = document.createElement('div');
     price.className = 'price';
-    price.textContent = num.format(plan.priceToman);
+    price.textContent = formatNumber(plan.priceToman);
     const unit = document.createElement('small');
-    unit.textContent = ' Toman';
+    unit.textContent = ` ${t('toman')}`;
     price.append(unit);
     const per = document.createElement('div');
     per.className = 'per-month';
     const months = Math.round(plan.days / 30);
-    per.textContent = months > 1 ? `${num.format(Math.round(plan.priceToman / months))} Toman per month` : `${plan.days} days of full access`;
+    per.textContent = months > 1
+      ? t('per_month', { price: formatNumber(Math.round(plan.priceToman / months)) })
+      : t('days_access', { days: formatNumber(plan.days) });
     const btn = document.createElement('button');
     btn.className = 'btn primary block';
-    btn.textContent = 'Pay';
+    btn.textContent = t('pay');
     btn.addEventListener('click', () => buy(plan.id, btn));
     el.append(h, price, per, btn);
     return el;
@@ -619,7 +623,7 @@ async function openPlans() {
     try {
       state.plans = (await api.plans()).plans;
     } catch {
-      return toast('Could not load the subscription plans.', 'err');
+      return toast(t('plans_failed'), 'err');
     }
   }
   renderPlans();
@@ -652,14 +656,13 @@ function handlePaymentReturn() {
   const q = new URLSearchParams(location.search);
   const result = q.get('payment');
   if (!result) return;
-  if (result === 'success') toast(`Payment successful — your subscription is active. Reference: ${q.get('ref') || '-'}`, 'ok', 10000);
-  else if (result === 'cancelled') toast('Payment was cancelled.', 'err', 6000);
-  else toast('Payment failed. If money was taken from your account, it will be returned within 72 hours.', 'err', 10000);
+  if (result === 'success') toast(t('payment_success', { ref: q.get('ref') || '-' }), 'ok', 10000);
+  else if (result === 'cancelled') toast(t('payment_cancelled'), 'err', 6000);
+  else toast(t('payment_failed'), 'err', 10000);
   history.replaceState(null, '', location.pathname);
 }
 
 // ---------- text to speech ----------
-const LANG_NAMES = { fa: 'Persian', en: 'English' };
 
 async function loadVoices() {
   try {
@@ -667,8 +670,13 @@ async function loadVoices() {
   } catch {
     state.voices = [];
   }
+  renderVoices();
+}
+
+function renderVoices() {
   const select = $('voice-select');
-  select.replaceChildren(new Option('Voice: auto', ''), ...state.voices.map((v) => new Option(`${LANG_NAMES[v.lang] || v.lang} – ${v.name}`, v.id)));
+  const label = (v) => `${['fa', 'en'].includes(v.lang) ? t(`lang_${v.lang}`) : v.lang} – ${v.name}`;
+  select.replaceChildren(new Option(t('voice_auto'), ''), ...state.voices.map((v) => new Option(label(v), v.id)));
   select.value = store.get('avatar.voice', '');
   if (select.selectedIndex < 0) select.value = '';
 }
@@ -683,9 +691,10 @@ function pickVoice(text) {
 $('voice-select').addEventListener('change', (e) => store.set('avatar.voice', e.target.value));
 
 const textArea = $('speak-text');
-textArea.addEventListener('input', () => {
-  $('char-count').textContent = `${num.format(textArea.value.length)} / ${num.format(1000)}`;
-});
+const renderCharCount = () => {
+  $('char-count').textContent = `${formatNumber(textArea.value.length)} / ${formatNumber(1000)}`;
+};
+textArea.addEventListener('input', renderCharCount);
 
 function renderSpeaking(phase) {
   setLoading($('btn-speak'), phase === 'loading');
@@ -695,10 +704,10 @@ function renderSpeaking(phase) {
 
 async function speak() {
   const text = textArea.value.trim();
-  if (!text) return toast('Type something first.');
+  if (!text) return toast(t('type_first'));
   if (!state.user) return openAuth('login', () => (state.user.subscribed ? speak() : openPlans()));
   if (!state.user.subscribed) return openPlans();
-  if (!usesCharacter() && !faceAvatar?.ready) return toast('Create your avatar first: look at the camera or upload a photo.');
+  if (!usesCharacter() && !faceAvatar?.ready) return toast(t('create_avatar_first'));
   unlockAudio();
   renderSpeaking('loading');
   try {
@@ -707,9 +716,9 @@ async function speak() {
     await speaker.playAudio(audio);
   } catch (err) {
     if (err.status === 503) {
-      toast('The voice server is unavailable right now, so your browser\'s voice is used instead.', '', 6000);
+      toast(t('voice_fallback'), '', 6000);
       renderSpeaking('playing');
-      await speaker.speakWithBrowser(text, detectLang(text)).catch(() => toast('Audio could not be played.', 'err'));
+      await speaker.speakWithBrowser(text, detectLang(text)).catch(() => toast(t('audio_failed'), 'err'));
     } else if (err.status === 401) {
       state.user = null;
       renderAccount();
@@ -768,11 +777,30 @@ function frame(now) {
   requestAnimationFrame(frame);
 }
 
+// ---------- language ----------
+function renderLanguage() {
+  applyLanguage();
+  renderLooks();
+  renderStage();
+  renderAccount();
+  renderVoices();
+  renderCharCount();
+  setAuthTab(state.authTab);
+  if ($('plans-dialog').open) renderPlans();
+}
+
+$('btn-lang').addEventListener('click', () => {
+  setLanguage(lang === 'fa' ? 'en' : 'fa');
+  renderLanguage();
+});
+
 // ---------- start ----------
+applyLanguage();
+renderCharCount();
 renderSpeaking('idle');
 renderAccount();
 handlePaymentReturn();
-setStatus('Getting ready…');
+setStatus(t('getting_ready'));
 await loadStyles();
 if (usesCharacter()) characters.setCharacter(state.look.slice(5));
 await restorePortraits();

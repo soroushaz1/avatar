@@ -4,6 +4,7 @@ import express from 'express';
 import { config } from './config.js';
 import { db, now, getUserById, getUserByLogin, publicUser } from './db.js';
 import { rateLimit } from './ratelimit.js';
+import { msg } from './i18n.js';
 
 const scrypt = promisify(crypto.scrypt);
 const SESSION_COOKIE = 'sid';
@@ -76,7 +77,7 @@ export function sessionMiddleware(req, _res, next) {
 }
 
 export function requireUser(req, res, next) {
-  if (!req.user) return res.status(401).json({ error: 'Please log in first.' });
+  if (!req.user) return res.status(401).json({ error: msg(req, 'login_required') });
   next();
 }
 
@@ -87,11 +88,11 @@ export const authRouter = express.Router();
 authRouter.post('/register', authLimiter, async (req, res) => {
   const login = normalizeLogin(req.body?.login);
   const password = req.body?.password;
-  if (!login) return res.status(400).json({ error: 'Enter a valid email address or mobile number.' });
+  if (!login) return res.status(400).json({ error: msg(req, 'invalid_login') });
   if (typeof password !== 'string' || password.length < 8 || password.length > 200) {
-    return res.status(400).json({ error: 'Password must be at least 8 characters.' });
+    return res.status(400).json({ error: msg(req, 'short_password') });
   }
-  if (getUserByLogin(login)) return res.status(409).json({ error: 'An account already exists for this login. Please log in.' });
+  if (getUserByLogin(login)) return res.status(409).json({ error: msg(req, 'account_exists') });
 
   const hash = await hashPassword(password);
   const { lastInsertRowid } = db
@@ -106,7 +107,7 @@ authRouter.post('/login', authLimiter, async (req, res) => {
   const password = req.body?.password;
   const user = login && getUserByLogin(login);
   if (!user || typeof password !== 'string' || !(await verifyPassword(password, user.password_hash))) {
-    return res.status(401).json({ error: 'Wrong login or password.' });
+    return res.status(401).json({ error: msg(req, 'wrong_credentials') });
   }
   createSession(res, user.id);
   res.json({ user: publicUser(user) });

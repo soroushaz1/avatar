@@ -5,6 +5,7 @@ import { config, findPlan } from './config.js';
 import { db, now, extendSubscription } from './db.js';
 import { requireUser } from './auth.js';
 import { rateLimit } from './ratelimit.js';
+import { msg } from './i18n.js';
 
 const zp = config.zarinpal;
 const host = zp.sandbox ? 'https://sandbox.zarinpal.com' : 'https://payment.zarinpal.com';
@@ -33,8 +34,8 @@ paymentRouter.get('/plans', (_req, res) => {
 
 paymentRouter.post('/request', requireUser, rateLimit({ windowMs: 10 * 60 * 1000, max: 10 }), async (req, res) => {
   const plan = findPlan(req.body?.planId);
-  if (!plan) return res.status(400).json({ error: 'Unknown subscription plan.' });
-  if (!zp.merchantId) return res.status(503).json({ error: 'Payments are not configured yet.' });
+  if (!plan) return res.status(400).json({ error: msg(req, 'unknown_plan') });
+  if (!zp.merchantId) return res.status(503).json({ error: msg(req, 'payments_unavailable') });
 
   const amountRial = plan.priceToman * 10;
   const { lastInsertRowid } = db
@@ -58,14 +59,14 @@ paymentRouter.post('/request', requireUser, rateLimit({ windowMs: 10 * 60 * 1000
     if (!data || data.code !== 100 || !data.authority) {
       db.prepare("UPDATE payments SET status = 'failed' WHERE id = ?").run(paymentId);
       console.error('Zarinpal request failed', errors || data);
-      return res.status(502).json({ error: 'Could not reach the payment gateway.' });
+      return res.status(502).json({ error: msg(req, 'gateway_error') });
     }
     db.prepare('UPDATE payments SET authority = ? WHERE id = ?').run(data.authority, paymentId);
     res.json({ url: startPayUrl(data.authority) });
   } catch (err) {
     db.prepare("UPDATE payments SET status = 'failed' WHERE id = ?").run(paymentId);
     console.error('Zarinpal request error', err);
-    res.status(502).json({ error: 'Could not reach the payment gateway.' });
+    res.status(502).json({ error: msg(req, 'gateway_error') });
   }
 });
 

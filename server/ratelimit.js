@@ -1,5 +1,7 @@
+import { msg } from './i18n.js';
+
 // Small in-memory fixed-window rate limiter; enough for a single-process deployment.
-export function rateLimit({ windowMs, max, key = (req) => req.ip, message = 'Too many requests. Please try again a little later.' }) {
+export function rateLimit({ windowMs, max, key = (req) => req.ip }) {
   const hits = new Map();
 
   setInterval(() => {
@@ -18,7 +20,7 @@ export function rateLimit({ windowMs, max, key = (req) => req.ip, message = 'Too
     entry.count += 1;
     if (entry.count > max) {
       res.set('Retry-After', String(Math.ceil((entry.reset - t) / 1000)));
-      return res.status(429).json({ error: message });
+      return res.status(429).json({ error: msg(req, 'too_many_requests') });
     }
     next();
   };

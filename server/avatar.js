@@ -3,6 +3,7 @@
 import express from 'express';
 import { config } from './config.js';
 import { db, now, isSubscribed } from './db.js';
+import { msg } from './i18n.js';
 
 const IDENTITY = `The character must be instantly recognizable as this exact person: keep the same face shape, \
 skin tone, eye color, eyebrows, nose, hairstyle and hair color, facial hair, glasses and accessories, and similar \
@@ -62,10 +63,10 @@ avatarRouter.get('/styles', (_req, res) => {
 });
 
 avatarRouter.post('/generate', express.json({ limit: '4mb' }), async (req, res) => {
-  if (!config.gemini.apiKey) return res.status(503).json({ error: 'Character generation is not set up yet.' });
+  if (!config.gemini.apiKey) return res.status(503).json({ error: msg(req, 'generation_unavailable') });
   const style = AVATAR_STYLES[req.body?.style] ? req.body.style : 'animated';
   const m = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(String(req.body?.image || ''));
-  if (!m) return res.status(400).json({ error: 'Please send a JPEG, PNG or WebP photo.' });
+  if (!m) return res.status(400).json({ error: msg(req, 'bad_photo') });
 
   // Quotas: per visitor (account or IP) per day, plus a site-wide daily cap to protect the API budget.
   const since = now() - DAY;
@@ -74,19 +75,17 @@ avatarRouter.post('/generate', express.json({ limit: '4mb' }), async (req, res) 
   const { gemini } = config;
   const total = db.prepare('SELECT COUNT(*) AS n FROM generations WHERE created_at > ?').get(since).n;
   if (total >= gemini.dailyLimit) {
-    return res.status(429).json({ error: 'We have reached today\'s limit for new characters. Please try again tomorrow.' });
+    return res.status(429).json({ error: msg(req, 'daily_cap') });
   }
   const mine = db.prepare(`SELECT COUNT(*) AS n FROM generations WHERE ${who[0]} = ? AND created_at > ?`).get(who[1], since).n;
   const limit = isSubscribed(req.user) ? gemini.subscriberLimit : gemini.freeLimit;
   if (mine >= limit) {
     return res.status(429).json({
-      error: isSubscribed(req.user)
-        ? `You can create up to ${limit} characters per day.`
-        : `Free visitors can create ${limit} characters per day. Subscribe for more.`,
+      error: msg(req, isSubscribed(req.user) ? 'subscriber_limit' : 'free_limit', { limit }),
       upgrade: !isSubscribed(req.user),
     });
   }
-  if (inFlight.has(key)) return res.status(429).json({ error: 'Your character is already being created.' });
+  if (inFlight.has(key)) return res.status(429).json({ error: msg(req, 'generation_in_progress') });
 
   inFlight.add(key);
   const { lastInsertRowid } = db
@@ -101,9 +100,7 @@ avatarRouter.post('/generate', express.json({ limit: '4mb' }), async (req, res) 
     db.prepare('DELETE FROM generations WHERE id = ?').run(Number(lastInsertRowid));
     console.error('Avatar generation failed:', err.message);
     res.status(err.blocked ? 422 : 502).json({
-      error: err.blocked
-        ? 'We could not turn this photo into a character. Please try a clear, front-facing photo.'
-        : 'Character generation failed. Please try again.',
+      error: msg(req, err.blocked ? 'generation_blocked' : 'generation_failed'),
     });
   } finally {
     inFlight.delete(key);
