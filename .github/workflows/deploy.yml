@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Package release
         run: tar czf "$RUNNER_TEMP/release.tgz" --exclude=./.git --exclude=./node_modules --exclude=./data --exclude=./.env --exclude=./.github .
