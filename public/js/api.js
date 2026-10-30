@@ -25,6 +25,7 @@ export const api = {
   avatarStyles: () => request('GET', '/api/avatar/styles'),
   generateAvatar: (image, style) => request('POST', '/api/avatar/generate', { image, style }),
   avatarMouths: (image) => request('POST', '/api/avatar/mouths', { image }),
+  completePhoto: (image) => request('POST', '/api/avatar/complete', { image }),
   // Speech as { audio (base64), mime, phonemes: [[phoneme, start, duration]] }.
   tts: (text, voice, speed) => request('POST', '/api/tts', { text, voice, speed }),
   ttsDemo: (lang, voice) => request('POST', '/api/tts/demo', { lang, voice }),

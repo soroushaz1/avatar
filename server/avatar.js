@@ -8,14 +8,24 @@ import { db, now, isSubscribed } from './db.js';
 import { msg } from './i18n.js';
 import { normalizeLogin } from './auth.js';
 
-const IDENTITY = `The character must be instantly recognizable as this exact person: keep the same face shape, \
-skin tone, eye color, eyebrows, nose, hairstyle and hair color, facial hair and similar clothing. Show only what \
-the person actually wears in the photo and add nothing: glasses only if the person wears glasses in the photo \
+const identity = (who) => `${who} must be instantly recognizable as this exact person: keep the same face shape, \
+skin tone, eye color, eyebrows, nose, lips, hairstyle and hair color, facial hair and similar clothing. Show only \
+what the person actually wears in the photo and add nothing: glasses only if the person wears glasses in the photo \
 (then the same glasses), otherwise no eyeglasses, sunglasses or goggles at all, and no hats, masks, jewelry or \
-face paint that are not in the photo. \
-Keep the same head position, head size, camera framing and pose as the photo: head and shoulders, facing \
-the camera and looking straight into the lens, with a neutral relaxed expression, mouth closed and eyes open. \
-A single character only. No text, no watermark, no border.`;
+face paint that are not in the photo.`;
+
+// Selfies are often tilted, off-centre or cut off by the edge of the picture; the avatar needs the whole head.
+const COMPOSE = `Compose the picture as a centered head-and-shoulders portrait: the head upright (not tilted) and \
+turned straight towards the camera, looking straight into the lens, the whole head and all of the hair inside the \
+picture with a little space above it, and the shoulders visible. If any part of the head, hair, ears, neck or \
+shoulders is cut off by the edge of the photo or hidden, complete it naturally and plausibly so it matches the \
+rest. The expression is neutral and relaxed, with the mouth closed and the eyes open. A single person only. \
+No text, no watermark, no border.`;
+
+// The realistic avatar from an incomplete or tilted photo: the same photo, completed and straightened.
+const COMPLETE_PROMPT = `Recreate this photo as a photorealistic portrait photograph of the same person. It must \
+look like a real, unedited camera photo (not a drawing, painting or 3D render) with the same lighting, colors, \
+skin texture and a similar background. ${identity('The person')} ${COMPOSE}`;
 
 export const AVATAR_STYLES = {
   animated: {
@@ -161,7 +171,7 @@ avatarRouter.post('/generate', express.json({ limit: '4mb' }), async (req, res) 
   const photo = parseImage(req.body?.image);
   if (!photo) return res.status(400).json({ error: msg(req, 'bad_photo') });
   await withQuota(req, res, style, async () => {
-    const prompt = `Turn the person in this photo into ${AVATAR_STYLES[style].prompt}. ${IDENTITY}`;
+    const prompt = `Turn the person in this photo into ${AVATAR_STYLES[style].prompt}. ${identity('The character')} ${COMPOSE}`;
     const character = await callGemini(prompt, photo.mimeType, photo.data);
     const [image, visemes] = await Promise.all([asJpegDataUrl(character), visemeImages(character)]);
     return { image, visemes, style };
@@ -173,4 +183,14 @@ avatarRouter.post('/mouths', express.json({ limit: '4mb' }), async (req, res) =>
   const character = parseImage(req.body?.image);
   if (!character) return res.status(400).json({ error: msg(req, 'bad_photo') });
   await withQuota(req, res, 'mouths', async () => ({ visemes: await visemeImages(character) }));
+});
+
+// A photo with part of the head cut off, or a tilted head, made complete and straight for the realistic avatar
+// (one quota unit).
+avatarRouter.post('/complete', express.json({ limit: '4mb' }), async (req, res) => {
+  const photo = parseImage(req.body?.image);
+  if (!photo) return res.status(400).json({ error: msg(req, 'bad_photo') });
+  await withQuota(req, res, 'complete', async () => ({
+    image: await asJpegDataUrl(await callGemini(COMPLETE_PROMPT, photo.mimeType, photo.data)),
+  }));
 });

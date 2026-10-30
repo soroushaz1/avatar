@@ -55,6 +55,9 @@ const state = {
   real: null,
   generated: {},
   generating: null,
+  // The user's photo has part of the head cut off or is tilted (Gemini can complete it); completing it now.
+  realIncomplete: false,
+  completing: false,
   generationError: null,
   afterLogin: null,
   authTab: 'login',
@@ -372,6 +375,19 @@ function renderOverlay(capturing) {
       actions: [{ label: t('turn_on_camera'), primary: true, onClick: () => startCamera() }, upload],
     });
   }
+  if (!capturing && state.mode === 'realistic' && state.real) {
+    if (state.completing) return showOverlay({ title: t('completing_title'), text: t('completing_text'), busy: true });
+    if (state.realIncomplete && state.generationAvailable) {
+      return showOverlay({
+        title: t('incomplete_title'),
+        text: t('incomplete_text'),
+        actions: [
+          { label: t('complete_photo'), primary: true, onClick: () => completePhoto() },
+          { label: t('keep_photo'), onClick: () => setIncomplete(false) },
+        ],
+      });
+    }
+  }
   if (capturing || state.mode !== 'fantasy' || usesCharacter() || state.generated[state.look]) return hideOverlay();
 
   // Fantasy mode with a captured face but no character in this style yet.
@@ -462,6 +478,7 @@ async function loadStyles() {
 
 // ---------- portraits: capture, upload, generation, persistence ----------
 const REAL_KEY = 'avatar.face';
+const INCOMPLETE_KEY = 'avatar.face.incomplete';
 const charKey = (style) => `avatar.character.${style}`;
 const charVisemesKey = (style) => `avatar.character.${style}.visemes`;
 const oldCharMouthsKey = (style) => `avatar.character.${style}.mouths`;
@@ -508,6 +525,8 @@ async function loadPortrait(key) {
 
 function forgetFace() {
   store.remove(REAL_KEY);
+  store.remove(INCOMPLETE_KEY);
+  state.realIncomplete = false;
   for (const s of state.styles) {
     store.remove(charKey(s.id));
     store.remove(charVisemesKey(s.id));
@@ -528,13 +547,54 @@ async function useNewPhoto(canvas, mirrored) {
     toast(t('no_face'), 'err');
     return false;
   }
-  if (Math.abs(portrait.restPose.yaw) > 0.35 || Math.abs(portrait.restPose.pitch) > 0.35) {
-    toast(t('look_straight'), 'err', 6000);
-  }
   forgetFace();
   state.real = portrait;
   savePortrait(REAL_KEY, portrait);
+  const incomplete = isIncomplete(portrait);
+  // Gemini can complete such a photo (offered in realistic mode; 3D characters are always composed well).
+  if (incomplete && !state.generationAvailable) toast(t('look_straight'), 'err', 6000);
+  setIncomplete(incomplete);
   return true;
+}
+
+// Whether part of the head is outside the photo, or the head is turned or tilted a lot.
+function isIncomplete({ landmarks, restPose }) {
+  const xs = landmarks.map((q) => q.x), ys = landmarks.map((q) => q.y);
+  const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+  const faceW = maxX - minX, faceH = maxY - minY;
+  const cutOff = minX - 0.1 * faceW < 0 || maxX + 0.1 * faceW > 1 || minY - 0.2 * faceH < 0 || maxY + 0.05 * faceH > 1;
+  const turned = Math.abs(restPose.yaw) > 0.3 || Math.abs(restPose.pitch) > 0.3 || Math.abs(restPose.roll) > 0.2;
+  return cutOff || turned;
+}
+
+function setIncomplete(incomplete) {
+  state.realIncomplete = incomplete;
+  if (incomplete) store.set(INCOMPLETE_KEY, true);
+  else store.remove(INCOMPLETE_KEY);
+  renderStage();
+}
+
+// Has Gemini complete and straighten the user's photo for the realistic avatar.
+async function completePhoto() {
+  if (!state.real || state.completing) return;
+  state.completing = true;
+  renderStage();
+  try {
+    const { image } = await api.completePhoto(state.real.canvas.toDataURL('image/jpeg', 0.9));
+    const portrait = await makePortrait(imageToCanvas(await loadImage(image)), state.real.mirrored);
+    if (!portrait) throw new Error(t('no_face_generated'));
+    state.real = portrait;
+    savePortrait(REAL_KEY, portrait);
+    setIncomplete(false);
+    toast(t('photo_completed'), 'ok');
+  } catch (err) {
+    console.warn('Photo completion failed', err);
+    if (err.data?.upgrade) subscribe();
+    toast(err.message, 'err', 7000);
+  } finally {
+    state.completing = false;
+    renderStage();
+  }
 }
 
 // Head-and-shoulders crop around the face (3:4), which is what the character generator works best with.
@@ -726,6 +786,7 @@ $('btn-reset-face').addEventListener('click', () => {
 
 async function restorePortraits() {
   state.real = await loadPortrait(REAL_KEY);
+  state.realIncomplete = !!state.real && store.get(INCOMPLETE_KEY, false);
   if (!state.real) return;
   for (const s of state.styles) {
     const p = await loadPortrait(charKey(s.id));
