@@ -231,6 +231,18 @@ function syncPortrait() {
   shownPortrait = portrait;
   if (portrait) faceAvatar.setFace(portrait.canvas, portrait.landmarks, portrait.restPose, portrait.mirrored);
   else faceAvatar.clear();
+  // A small copy is enough for the blurred background.
+  const bg = $('stage-bg');
+  if (portrait) {
+    const small = document.createElement('canvas');
+    small.width = 48;
+    small.height = Math.max(1, Math.round((48 * portrait.canvas.height) / portrait.canvas.width));
+    small.getContext('2d').drawImage(portrait.canvas, 0, 0, small.width, small.height);
+    bg.style.backgroundImage = `url(${small.toDataURL('image/jpeg', 0.8)})`;
+    bg.style.transform = portrait.mirrored ? 'scaleX(-1)' : '';
+  } else {
+    bg.style.backgroundImage = '';
+  }
 }
 
 // While the realistic avatar records the user's mouth shapes, the stage shows the live camera so the
@@ -272,7 +284,7 @@ function renderStage() {
   $('stage').classList.toggle('recording', !!state.recording);
   $('rec-badge').hidden = !state.recording;
   $('char-canvas').hidden = !charMode;
-  for (const id of ['face-canvas', 'mouth-canvas']) $(id).hidden = charMode || !faceAvatar?.ready || liveCameraShown;
+  for (const id of ['face-canvas', 'mouth-canvas', 'stage-bg']) $(id).hidden = charMode || !faceAvatar?.ready || liveCameraShown;
   video.hidden = !tracker.cameraOn || (!live && !state.showPreview);
   video.classList.toggle('live', live);
   $('guide').hidden = !(capturing && live);

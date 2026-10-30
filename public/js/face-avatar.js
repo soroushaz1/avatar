@@ -495,12 +495,14 @@ export class FaceAvatar {
     const p = f.mirrored ? rawParams : mirrorParams(rawParams);
     const fromSamples = !!visemes && this.hasMouthSamples;
 
-    // Map image pixels to clip space: show the head-and-shoulders region, always covering the canvas.
+    // Map image pixels to clip space: the whole head-and-shoulders region always fits the canvas height
+    // (so the top of the head is never cut off); a canvas wider than the image shows the page behind it.
     const cw = this.glCanvas.width, ch = this.glCanvas.height;
-    const s = Math.max(ch / f.viewH, cw / f.W, ch / f.H); // image px -> canvas px
+    const s = ch / f.viewH; // image px -> canvas px
     const hw = cw / s / 2, hh = ch / s / 2;
-    const vx = Math.min(f.W - hw, Math.max(hw, f.viewC[0]));
-    const vy = Math.min(f.H - hh, Math.max(hh, f.viewC[1]));
+    const fit = (c, half, size) => (2 * half >= size ? size / 2 : Math.min(size - half, Math.max(half, c)));
+    const vx = fit(f.viewC[0], hw, f.W);
+    const vy = fit(f.viewC[1], hh, f.H);
     const sxClip = (2 * s) / cw * (f.mirrored ? -1 : 1);
     const syClip = (-2 * s) / ch;
     const oxClip = -vx * sxClip;
