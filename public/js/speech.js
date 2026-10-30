@@ -36,7 +36,28 @@ function fft(re, im) {
   }
 }
 
-// Precomputes a viseme-like track from the whole utterance so playback is perfectly in sync.
+// Loudness (0..1 of the loudest moment) every HOP seconds: all that is needed alongside phoneme timings,
+// and much cheaper than analyzeSpeech on long texts.
+function loudnessTrack(buffer) {
+  const data = buffer.getChannelData(0);
+  const hop = Math.round(buffer.sampleRate * HOP);
+  const frames = Math.max(1, Math.ceil(data.length / hop));
+  const track = new Array(frames);
+  let peak = 1e-6;
+  for (let f = 0; f < frames; f++) {
+    // A 30 ms window, so the level doesn't flicker with the voice's pitch.
+    let sum = 0;
+    const start = Math.max(0, (f - 1) * hop), end = Math.min(data.length, (f + 2) * hop);
+    for (let i = start; i < end; i++) sum += data[i] * data[i];
+    const rms = Math.sqrt(sum / Math.max(1, end - start));
+    peak = Math.max(peak, rms);
+    track[f] = rms;
+  }
+  return track.map((rms) => ({ energy: rms / peak }));
+}
+
+// Precomputes a viseme-like track from the whole utterance so playback is perfectly in sync
+// (used when the voice engine gives no phoneme timings).
 export function analyzeSpeech(buffer) {
   const data = buffer.getChannelData(0);
   const sr = buffer.sampleRate;
@@ -205,8 +226,8 @@ export class Speaker {
     this.stop();
     const c = ctx();
     const buffer = await c.decodeAudioData(base64ToBuffer(audio));
-    const loudness = analyzeSpeech(buffer);
     const track = phonemes?.length ? visemeTrack(phonemes) : null;
+    const loudness = track ? loudnessTrack(buffer) : analyzeSpeech(buffer);
     const src = c.createBufferSource();
     src.buffer = buffer;
     src.connect(c.destination);

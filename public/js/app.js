@@ -5,7 +5,7 @@ import { FaceAvatar } from './face-avatar.js';
 import { Speaker, unlockAudio, detectLang, createRecordingDestination } from './speech.js';
 import { MouthSamples, saveSampleSet, loadSampleSet } from './mouth-samples.js';
 import { VISEME_IDS, visemeOfBlendshapes } from './visemes.js';
-import { VideoRecorder, buildCaptions, canRecordVideo } from './recorder.js';
+import { VideoRecorder, VIDEO_FPS, buildCaptions, canRecordVideo } from './recorder.js';
 import { t, lang, setLanguage, applyLanguage, formatNumber, formatDate, formatDuration } from './i18n.js';
 
 const $ = (id) => document.getElementById(id);
@@ -1012,7 +1012,11 @@ $('btn-stop').addEventListener('click', () => {
 
 // ---------- video ----------
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const recordLayers = () => (usesCharacter() ? [$('char-canvas')] : [$('face-canvas'), $('mouth-canvas')]);
+// The drawn-mouth layer is only used when the avatar has no mouth images.
+const recordLayers = () => {
+  if (usesCharacter()) return [$('char-canvas')];
+  return faceAvatar.hasMouthSamples ? [$('face-canvas')] : [$('face-canvas'), $('mouth-canvas')];
+};
 
 let recTimer = null;
 function setRecording(recorder) {
@@ -1111,7 +1115,21 @@ let last = performance.now();
 
 const blendshapesOf = (result) => Object.fromEntries((result.faceBlendshapes?.[0]?.categories || []).map((c) => [c.categoryName, c.score]));
 
+let frameFailed = false;
 function frame(now) {
+  requestAnimationFrame(frame);
+  // While recording, the video's frame rate is enough and leaves the device time to encode it.
+  if (state.recording && now - last < 1000 / VIDEO_FPS - 4) return;
+  try {
+    step(now);
+  } catch (err) {
+    // Keep the page alive; report the problem once.
+    if (!frameFailed) console.error('Animation error', err);
+    frameFailed = true;
+  }
+}
+
+function step(now) {
   const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
 
@@ -1166,8 +1184,6 @@ function frame(now) {
     faceAvatar.update(live, dt, { relativePose: true, mouthFromSpeech: !!mouth, visemes });
   }
   if (state.recording) state.recording.recorder.draw(recordLayers(), speaker.elapsed());
-
-  requestAnimationFrame(frame);
 }
 
 // ---------- language ----------

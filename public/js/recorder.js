@@ -10,12 +10,16 @@ export const VIDEO_FORMATS = {
   landscape: { size: [1280, 720], avatar: [540, 720], top: 0.5 },
 };
 
+// Phones get smaller videos (still sharp on a phone screen), which keeps recording smooth.
+const SCALE = matchMedia('(pointer: coarse)').matches || (navigator.hardwareConcurrency || 8) <= 4 ? 0.75 : 1;
+export const VIDEO_FPS = 25;
+
+// H.264 (hardware-encoded on most devices) first; VP8 is much lighter to encode than VP9.
 const MIME_TYPES = [
   'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
   'video/mp4;codecs=avc1,mp4a.40.2',
-  'video/mp4',
-  'video/webm;codecs=vp9,opus',
   'video/webm;codecs=vp8,opus',
+  'video/mp4',
   'video/webm',
 ];
 
@@ -86,19 +90,17 @@ export class VideoRecorder {
    */
   constructor(format, { captions = null, rtl = false } = {}) {
     const { size, avatar, top } = VIDEO_FORMATS[format] || VIDEO_FORMATS.portrait;
-    this.avatarSize = avatar;
+    const even = (n) => Math.round((n * SCALE) / 2) * 2;
+    this.avatarSize = avatar.map(even);
     this.top = top;
     this.canvas = document.createElement('canvas');
-    [this.canvas.width, this.canvas.height] = size;
+    [this.canvas.width, this.canvas.height] = size.map(even);
     this.ctx = this.canvas.getContext('2d');
-    // A tiny copy of the avatar, scaled up, is a cheap blurred background.
-    this.tiny = document.createElement('canvas');
-    this.tiny.width = 24;
-    this.tiny.height = 32;
+    // The blurred background is made once: copying the avatar out of WebGL every frame stalls phones.
+    this.background = null;
     this.captions = captions;
     this.rtl = rtl;
     this.mimeType = pickMimeType();
-    this.time = 0;
   }
 
   get extension() {
@@ -106,9 +108,9 @@ export class VideoRecorder {
   }
 
   start(audioStream) {
-    this.stream = this.canvas.captureStream(30);
+    this.stream = this.canvas.captureStream(VIDEO_FPS);
     for (const track of audioStream?.getAudioTracks() || []) this.stream.addTrack(track);
-    const options = { videoBitsPerSecond: 5_000_000, audioBitsPerSecond: 128_000 };
+    const options = { videoBitsPerSecond: Math.round(3_000_000 * SCALE * SCALE), audioBitsPerSecond: 128_000 };
     if (this.mimeType) options.mimeType = this.mimeType;
     this.recorder = new MediaRecorder(this.stream, options);
     this.mimeType = this.recorder.mimeType || this.mimeType || 'video/webm';
@@ -128,6 +130,28 @@ export class VideoRecorder {
     });
   }
 
+  // A blurred, darkened copy of the avatar filling the frame (a tiny copy scaled up is a cheap blur).
+  makeBackground(layers) {
+    const W = this.canvas.width, H = this.canvas.height;
+    const tiny = document.createElement('canvas');
+    tiny.width = 24;
+    tiny.height = 32;
+    const tctx = tiny.getContext('2d');
+    for (const layer of layers) tctx.drawImage(layer, 0, 0, tiny.width, tiny.height);
+    const bg = document.createElement('canvas');
+    bg.width = W;
+    bg.height = H;
+    const ctx = bg.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    const cover = Math.max(W / tiny.width, H / tiny.height);
+    const bw = tiny.width * cover, bh = tiny.height * cover;
+    ctx.drawImage(tiny, (W - bw) / 2, (H - bh) / 2, bw, bh);
+    ctx.fillStyle = 'rgba(10, 8, 20, 0.35)';
+    ctx.fillRect(0, 0, W, H);
+    return bg;
+  }
+
   /**
    * Draws one video frame.
    * @param layers canvases holding the avatar, all the same size, drawn in order
@@ -138,20 +162,15 @@ export class VideoRecorder {
     const W = canvas.width, H = canvas.height;
     const src = layers[0];
     if (!src?.width || !src.height) return;
-    const tctx = this.tiny.getContext('2d');
-    tctx.clearRect(0, 0, this.tiny.width, this.tiny.height);
-    for (const layer of layers) tctx.drawImage(layer, 0, 0, this.tiny.width, this.tiny.height);
-    ctx.fillStyle = '#120f24';
-    ctx.fillRect(0, 0, W, H);
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
-    const cover = Math.max(W / this.tiny.width, H / this.tiny.height);
-    const bw = this.tiny.width * cover, bh = this.tiny.height * cover;
-    ctx.drawImage(this.tiny, (W - bw) / 2, (H - bh) / 2, bw, bh);
-    ctx.fillStyle = 'rgba(10, 8, 20, 0.35)';
-    ctx.fillRect(0, 0, W, H);
+    if (!this.background) {
+      this.background = this.makeBackground(layers);
+      ctx.drawImage(this.background, 0, 0);
+    }
+    // Around the avatar only the subtitle area changes, so only that part of the background is redrawn.
+    const band = Math.round(H * 0.3);
+    ctx.drawImage(this.background, 0, H - band, W, band, 0, H - band, W, band);
 
-    // The avatar as large as fits.
+    // The avatar as large as fits (normally its exact size, so this is a plain copy).
     const s = Math.min(W / src.width, H / src.height);
     const w = src.width * s, h = src.height * s;
     for (const layer of layers) ctx.drawImage(layer, (W - w) / 2, (H - h) * this.top, w, h);
@@ -189,7 +208,8 @@ export class VideoRecorder {
     const bottom = H * 0.95;
     ctx.fillStyle = 'rgba(10, 8, 20, 0.62)';
     ctx.beginPath();
-    ctx.roundRect((W - boxW) / 2, bottom - boxH, boxW, boxH, size * 0.45);
+    if (ctx.roundRect) ctx.roundRect((W - boxW) / 2, bottom - boxH, boxW, boxH, size * 0.45);
+    else ctx.rect((W - boxW) / 2, bottom - boxH, boxW, boxH);
     ctx.fill();
     ctx.fillStyle = '#ffffff';
     rows.forEach((r, i) => ctx.fillText(r, W / 2, bottom - boxH + size * 0.25 + lineH * (i + 0.5)));
