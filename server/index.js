@@ -60,12 +60,14 @@ const vendor = {
   delaunator: 'node_modules/delaunator',
   vazirmatn: 'node_modules/vazirmatn',
 };
-const longCache = { maxAge: '30d', immutable: true };
+// Vendor files and models change only with dependency upgrades; the site's own files are revalidated on
+// every load (cheap 304s), so a deploy is visible immediately.
+const longCache = { maxAge: '7d' };
 for (const [name, dir] of Object.entries(vendor)) {
   app.use(`/vendor/${name}`, express.static(path.join(ROOT, dir), longCache));
 }
 app.use('/models', express.static(path.join(ROOT, 'public/models'), longCache));
-app.use(express.static(path.join(ROOT, 'public'), { maxAge: '1h' }));
+app.use(express.static(path.join(ROOT, 'public'), { maxAge: 0 }));
 
 app.use((err, req, res, _next) => {
   console.error(err);

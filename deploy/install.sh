@@ -103,7 +103,9 @@ if [ ! -x "$VENV/bin/python" ]; then
   log "Creating Python environment for the voice service"
   python3 -m venv "$VENV"
 fi
-if ! "$VENV/bin/pip" show piper-tts 2>/dev/null | grep -q "^Version: $PIPER_VERSION$"; then
+# Read the version first: `pip show | grep -q` can fail under pipefail when grep exits early.
+installed=$("$VENV/bin/pip" show piper-tts 2>/dev/null | awk '/^Version:/ {print $2}' || true)
+if [ "$installed" != "$PIPER_VERSION" ]; then
   log "Installing Piper $PIPER_VERSION"
   "$VENV/bin/pip" install -q --upgrade pip
   "$VENV/bin/pip" install -q "piper-tts==$PIPER_VERSION"
