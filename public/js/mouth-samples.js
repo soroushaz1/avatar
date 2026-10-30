@@ -3,8 +3,10 @@
 // - for the 3D character, the Gemini-made images (saved/loaded with saveSampleSet/loadSampleSet).
 import { VISEME_IDS, visemeOfBlendshapes } from './visemes.js';
 
-const CROP_SIZE = 448;
-const STORE_KEY = 'avatar.visemes';
+const CROP_SIZE = 384;
+const STORE_KEY = 'avatar.visemes2';
+// Earlier formats (head-and-shoulders crops, too small for sharp lips), removed when found.
+const OLD_KEYS = ['avatar.visemes', 'avatar.mouths'];
 // How many of the shapes the realistic avatar needs before it can read text.
 export const SAMPLES_NEEDED = 6;
 
@@ -81,8 +83,7 @@ export class MouthSamples {
     this.set = {};
     this.version++;
     try {
-      localStorage.removeItem(STORE_KEY);
-      localStorage.removeItem('avatar.mouths'); // older format
+      for (const key of [STORE_KEY, ...OLD_KEYS]) localStorage.removeItem(key);
     } catch { /* storage unavailable */ }
   }
 
@@ -105,19 +106,18 @@ export class MouthSamples {
     if (current && current.quality >= quality - 0.03) return false;
     this.lastGrab = now;
 
-    // Head-and-shoulders crop around the face, so the frame covers what the avatar shows.
-    const xs = landmarks.map((q) => q.x * W), ys = landmarks.map((q) => q.y * H);
+    // Only the lips are used, so a square around the mouth (nose to below the chin) at full camera
+    // resolution keeps them sharp.
+    const ys = landmarks.map((q) => q.y * H);
     const faceH = Math.max(...ys) - Math.min(...ys);
-    const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cy = (Math.min(...ys) + Math.max(...ys)) / 2 + faceH * 0.3;
-    const size = faceH * 3.2;
-    const cw = Math.min(W, size), ch = Math.min(H, size);
-    const x0 = Math.min(W - cw, Math.max(0, cx - cw / 2)), y0 = Math.min(H - ch, Math.max(0, cy - ch / 2));
-    const scale = Math.min(1, CROP_SIZE / Math.max(cw, ch));
+    const mx = ((landmarks[13].x + landmarks[14].x) / 2) * W, my = ((landmarks[13].y + landmarks[14].y) / 2) * H;
+    const size = Math.min(W, H, faceH * 0.9);
+    const x0 = Math.min(W - size, Math.max(0, mx - size / 2)), y0 = Math.min(H - size, Math.max(0, my - size / 2));
+    const scale = Math.min(1, CROP_SIZE / size);
     const canvas = document.createElement('canvas');
-    canvas.width = Math.round(cw * scale);
-    canvas.height = Math.round(ch * scale);
-    canvas.getContext('2d').drawImage(video, x0, y0, cw, ch, 0, 0, canvas.width, canvas.height);
-    const local = landmarks.slice(0, 468).map((q) => ({ x: (q.x * W - x0) / cw, y: (q.y * H - y0) / ch, z: (q.z * W) / cw }));
+    canvas.width = canvas.height = Math.round(size * scale);
+    canvas.getContext('2d', { willReadFrequently: true }).drawImage(video, x0, y0, size, size, 0, 0, canvas.width, canvas.height);
+    const local = landmarks.slice(0, 468).map((q) => ({ x: (q.x * W - x0) / size, y: (q.y * H - y0) / size, z: (q.z * W) / size }));
     this.set[id] = { canvas, landmarks: local, quality };
     this.version++;
     return true;
@@ -130,5 +130,8 @@ export class MouthSamples {
   async restore() {
     this.set = await loadSampleSet(STORE_KEY);
     this.version++;
+    try {
+      for (const key of OLD_KEYS) localStorage.removeItem(key);
+    } catch { /* storage unavailable */ }
   }
 }

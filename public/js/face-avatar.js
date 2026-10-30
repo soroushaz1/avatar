@@ -28,13 +28,14 @@ void main() {
   gl_Position = vec4(aPos.xy * uView.xy + uView.zw, clamp(aPos.z * uDepth, -0.99, 0.99), 1.0);
 }`;
 
-// Mouth-sample frames only show around the mouth and jaw (vMask) and fade out towards their crop
-// edges (uFeather), so the eyes, hair and background always come from the portrait.
+// Mouth images only show on the lips and inside the mouth (vMask) and fade out towards their crop
+// edges (uFeather); everything else comes from the portrait. uGain matches their colours to it.
 const FRAGMENT_SHADER = `
 precision mediump float;
 uniform sampler2D uTex;
 uniform float uAlpha;
 uniform float uFeather;
+uniform vec3 uGain;
 varying vec2 vUv;
 varying float vMask;
 void main() {
@@ -43,11 +44,50 @@ void main() {
     float edge = min(min(vUv.x, 1.0 - vUv.x), min(vUv.y, 1.0 - vUv.y));
     a *= smoothstep(0.0, uFeather, edge) * vMask;
   }
-  gl_FragColor = vec4(texture2D(uTex, vUv).rgb, a);
+  gl_FragColor = vec4(texture2D(uTex, vUv).rgb * uGain, a);
 }`;
 
 // Landmarks that barely move when talking, used to line mouth samples up with the portrait.
 const STABLE_POINTS = [33, 133, 362, 263, 168, 6, 197, 195, 5, 4, 10, 151, 9, 127, 356, 234, 454];
+// The base of the nose: a mouth image is shifted so these meet the portrait's exactly, which removes
+// the offset a slightly different head tilt leaves around the mouth.
+const NOSE_BASE = [2, 98, 327];
+// Skin around the mouth, compared between a mouth image and the portrait to match their colours.
+const SKIN_AROUND_MOUTH = [57, 186, 92, 165, 167, 164, 393, 391, 322, 410, 287, 43, 106, 182, 83, 18, 313, 406, 335, 273, 205, 425];
+const OUTER_LIP_POLYGON = [61, ...LIP_UPPER_OUTER, 291, ...LIP_LOWER_OUTER.slice().reverse()];
+
+// Distance from a point to a polygon's outline, 0 inside it.
+function distanceToPolygon(p, poly) {
+  let inside = false, best = Infinity;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[i], b = poly[j];
+    if ((a[1] > p[1]) !== (b[1] > p[1]) && p[0] < ((b[0] - a[0]) * (p[1] - a[1])) / (b[1] - a[1]) + a[0]) inside = !inside;
+    const dx = b[0] - a[0], dy = b[1] - a[1];
+    const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / (dx * dx + dy * dy || 1)));
+    best = Math.min(best, Math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy));
+  }
+  return inside ? 0 : best;
+}
+
+// Average colour of small patches around the given points (pixel coordinates) of a canvas.
+function meanColor(canvas, pts, ids) {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+  const sum = [0, 0, 0];
+  let n = 0;
+  for (const i of ids) {
+    const x = Math.round(pts[i][0]) - 2, y = Math.round(pts[i][1]) - 2;
+    if (x < 0 || y < 0 || x + 5 > canvas.width || y + 5 > canvas.height) continue;
+    const d = ctx.getImageData(x, y, 5, 5).data;
+    for (let k = 0; k < d.length; k += 4) {
+      sum[0] += d[k];
+      sum[1] += d[k + 1];
+      sum[2] += d[k + 2];
+      n++;
+    }
+  }
+  return n ? sum.map((v) => v / n) : null;
+}
 
 // Face landmarks plus two rings around the face and the image border, in pixels (with depth).
 function meshPoints(landmarks, W, H) {
@@ -125,6 +165,7 @@ export class FaceAvatar {
       uDepth: gl.getUniformLocation(prog, 'uDepth'),
       uAlpha: gl.getUniformLocation(prog, 'uAlpha'),
       uFeather: gl.getUniformLocation(prog, 'uFeather'),
+      uGain: gl.getUniformLocation(prog, 'uGain'),
     };
     this.posBuf = gl.createBuffer();
     this.uvBuf = gl.createBuffer();
@@ -248,8 +289,22 @@ export class FaceAvatar {
     pts.forEach((p, i) => { uvs[i * 2] = p[0] / W; uvs[i * 2 + 1] = p[1] / H; });
     gl.bindBuffer(gl.ARRAY_BUFFER, this.uvBuf);
     gl.bufferData(gl.ARRAY_BUFFER, uvs, gl.STATIC_DRAW);
-    // Where mouth samples may show: lips, chin and lower cheeks, fading out well below the eyes.
-    const mask = Float32Array.from(pts, (p) => 1 - smoothstep(0.24 * faceH, 0.42 * faceH, dist(p, mouthC)));
+    // Where mouth images show: the lips and the inside of the mouth, fading out just outside the lips.
+    // The skin, beard and nose around them always come from the portrait (moved by the morph below).
+    const lipOutline = OUTER_LIP_POLYGON.map(P);
+    const mask = Float32Array.from(pts, (p, i) => (i < FACE_POINT_COUNT
+      ? 1 - smoothstep(0.04 * mouthW, 0.24 * mouthW, distanceToPolygon(p, lipOutline)) : 0));
+    // How much each point follows the mouth images' shape: the lips, chin and jaw fully; nothing from
+    // the base of the nose up, so the nose never moves.
+    const noseV = local(P(2))[1], lipTopV = local(P(0))[1];
+    const morphWeight = Float32Array.from(pts, (p, i) => {
+      if (i >= FACE_POINT_COUNT + 2 * FACE_OVAL.length) return 0; // image border
+      const [u, v] = local(p);
+      const up = smoothstep(noseV, lipTopV, v);
+      const down = 1 - smoothstep(chinV, chinV + 0.3 * faceH, v);
+      const side = 1 - smoothstep(0.75 * mouthW, 1.4 * mouthW, Math.abs(u));
+      return up * down * side * (i < FACE_POINT_COUNT ? 1 : 0.7);
+    });
     gl.bindBuffer(gl.ARRAY_BUFFER, this.maskBuf);
     gl.bufferData(gl.ARRAY_BUFFER, mask, gl.STATIC_DRAW);
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.idxBuf);
@@ -266,7 +321,7 @@ export class FaceAvatar {
       // An image with the mouth already open keeps its own teeth, attached to the upper lip.
       restOpen: dist(P(13), P(14)) > 0.06 * mouthW,
       restGap: dist(P(13), P(14)) / dist(P(78), P(308)),
-      mask,
+      morphWeight,
       morph: pts.map((p) => [...p]),
       positions: new Float32Array(n * 3),
       positionsB: new Float32Array(n * 3),
@@ -301,7 +356,7 @@ export class FaceAvatar {
       const uvBuf = gl.createBuffer();
       gl.bindBuffer(gl.ARRAY_BUFFER, uvBuf);
       gl.bufferData(gl.ARRAY_BUFFER, uvs, gl.STATIC_DRAW);
-      this.samples[id] = { tex, uvBuf, pts, aligned: null };
+      this.samples[id] = { tex, uvBuf, pts, canvas, aligned: null, gain: [1, 1, 1] };
     }
   }
 
@@ -323,7 +378,21 @@ export class FaceAvatar {
     if (!sm.aligned) {
       const f = this.face;
       const map = similarity(sm.pts, f.rest, STABLE_POINTS);
-      sm.aligned = sm.pts.map(map);
+      const aligned = sm.pts.map(map);
+      const shift = [0, 1].map((k) => NOSE_BASE.reduce((sum, i) => sum + f.rest[i][k] - aligned[i][k], 0) / NOSE_BASE.length);
+      for (const q of aligned) {
+        q[0] += shift[0];
+        q[1] += shift[1];
+      }
+      sm.aligned = aligned;
+      // Frames taken at different moments differ in exposure: scale the colours to the portrait's.
+      try {
+        const mine = meanColor(sm.canvas, sm.pts, SKIN_AROUND_MOUTH);
+        const theirs = meanColor(this.source, f.rest, SKIN_AROUND_MOUTH);
+        if (mine && theirs) sm.gain = theirs.map((c, k) => Math.min(1.35, Math.max(0.75, (c + 1) / (mine[k] + 1))));
+      } catch {
+        sm.gain = [1, 1, 1];
+      }
     }
     return sm.aligned;
   }
@@ -448,9 +517,10 @@ export class FaceAvatar {
     gl.uniform1f(this.loc.uDepth, 1 / (f.faceW * 4));
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.idxBuf);
 
-    const draw = (positions, tex, uvBuf, alpha, feather, first = 0, count = f.indices) => {
+    const draw = (positions, tex, uvBuf, alpha, feather, first = 0, count = f.indices, gain = [1, 1, 1]) => {
       gl.uniform1f(this.loc.uAlpha, alpha);
       gl.uniform1f(this.loc.uFeather, feather);
+      gl.uniform3f(this.loc.uGain, gain[0], gain[1], gain[2]);
       gl.bindBuffer(gl.ARRAY_BUFFER, this.posBuf);
       gl.bufferData(gl.ARRAY_BUFFER, positions, gl.DYNAMIC_DRAW);
       gl.enableVertexAttribArray(this.loc.aPos);
@@ -486,16 +556,16 @@ export class FaceAvatar {
       if (same) same.w += w;
       else layers.push({ sm, w, mesh: this.alignedSample(sm) });
     }
-    const { rest, morph, mask } = f;
+    const { rest, morph, morphWeight } = f;
     for (let i = 0; i < f.n; i++) {
-      const r = rest[i], m = morph[i];
+      const r = rest[i], m = morph[i], k = morphWeight[i];
       m[0] = r[0];
       m[1] = r[1];
-      // Only the mouth and jaw move; small differences elsewhere (eyes, hair) are ignored.
-      if (mask[i] <= 0) continue;
+      // Only the mouth and jaw move; small differences elsewhere (nose, eyes, hair) are ignored.
+      if (k <= 0) continue;
       for (const { mesh, w } of layers) {
-        m[0] += (mesh[i][0] - r[0]) * w * mask[i];
-        m[1] += (mesh[i][1] - r[1]) * w * mask[i];
+        m[0] += (mesh[i][0] - r[0]) * w * k;
+        m[1] += (mesh[i][1] - r[1]) * w * k;
       }
     }
     const still = { ...p, jawOpen: 0, smile: 0, wide: 0, pucker: 0 };
@@ -511,7 +581,7 @@ export class FaceAvatar {
       above -= w;
       if (alpha < 0.02) continue;
       gl.clear(gl.DEPTH_BUFFER_BIT);
-      draw(pos, sm.tex, sm.uvBuf, alpha, 0.12);
+      draw(pos, sm.tex, sm.uvBuf, alpha, 0.12, 0, f.indices, sm.gain);
     }
     // Inside the mouth opening the closed-mouth portrait has nothing to show (its lips would only be
     // stretched there), so the opening shows the images alone, in proportion to their weights.
@@ -519,7 +589,7 @@ export class FaceAvatar {
     for (const { sm, w } of layers) {
       sum += w;
       gl.clear(gl.DEPTH_BUFFER_BIT);
-      draw(pos, sm.tex, sm.uvBuf, w / sum, 0.12, f.openingStart, f.indices - f.openingStart);
+      draw(pos, sm.tex, sm.uvBuf, w / sum, 0.12, f.openingStart, f.indices - f.openingStart, sm.gain);
     }
     gl.disable(gl.BLEND);
   }

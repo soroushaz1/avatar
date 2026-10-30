@@ -21,8 +21,9 @@ Every sound maps to one of nine mouth shapes (visemes, `public/js/visemes.js`): 
 "e", "a", "ɑ/آ", "i", "o" and "u". Piper reports when each phoneme is spoken; the browser turns that into a
 track of mouth shapes with coarticulation (lips anticipate the next vowel) and undershoot on short vowels
 (`public/js/speech.js`). The avatar keeps one image per shape (Gemini-made for 3D characters, webcam frames for
-the realistic avatar) and morphs between them: the mesh moves towards each image's mouth by its weight while the
-images cross-fade (`public/js/face-avatar.js`).
+the realistic avatar) and morphs between them: the lips and jaw of the portrait move towards each image's mouth
+by its weight, and only the lips and the inside of the mouth are taken from the images (aligned on the base of the
+nose and colour-matched), so the nose and skin never flicker (`public/js/face-avatar.js`).
 
 ## How it works
 
