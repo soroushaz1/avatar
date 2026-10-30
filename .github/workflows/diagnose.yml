@@ -29,6 +29,13 @@ jobs:
             [ -f "$f" ] && grep -E 'vision_wasm|face_landmarker|vision_bundle' "$f" | tail -n 30 \
               | awk '{ split($0, q, "\""); print $4, $5, q[2], $9, $10 }'
           done
+          echo "== speech with phoneme timings (demo sentence)"
+          for l in fa en; do
+            curl -s -m 120 -X POST -H 'Content-Type: application/json' -d "{\"lang\":\"$l\"}" http://127.0.0.1:3000/api/tts/demo \
+              | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{const j=JSON.parse(s);console.log(process.argv[1], j.mime||"", "audio chars:", (j.audio||"").length, "phonemes:", (j.phonemes||[]).length, JSON.stringify((j.phonemes||[]).slice(0,6)), j.error||"")}catch{console.log(process.argv[1], "bad response:", s.slice(0,200))}})' "$l"
+          done
+          echo "== memory"; free -h | sed -n 2,3p
+          ps -o rss=,comm= -C python3,node | awk '{printf "%s %d MB\n", $2, $1/1024}'
           echo "== gzip check"
           curl -s -o /dev/null -w 'wasm via nginx: HTTP %{http_code}, %{size_download} bytes, %{time_total}s\n' \
             -H 'Accept-Encoding: gzip' --resolve avatar.tamirdesk.ir:443:127.0.0.1 \
