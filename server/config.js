@@ -39,8 +39,11 @@ export const config = {
   gemini: {
     apiKey: env.GEMINI_API_KEY || '',
     model: env.GEMINI_IMAGE_MODEL || 'gemini-2.5-flash-image',
+    // Override only for testing against a mock API.
+    apiBase: (env.GEMINI_API_BASE || 'https://generativelanguage.googleapis.com').replace(/\/$/, ''),
     // Character generations per 24h: whole site / free visitor (account or IP) / subscriber.
-    dailyLimit: Number(env.AVATAR_DAILY_LIMIT || 300),
+    // Each character is four images (the character and three mouth shapes), about $0.16 with Gemini Flash.
+    dailyLimit: Number(env.AVATAR_DAILY_LIMIT || 100),
     freeLimit: Number(env.AVATAR_FREE_LIMIT || 2),
     subscriberLimit: Number(env.AVATAR_SUBSCRIBER_LIMIT || 20),
   },

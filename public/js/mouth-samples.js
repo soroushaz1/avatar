@@ -102,16 +102,10 @@ export class MouthSamples {
       data = JSON.parse(localStorage.getItem(STORE_KEY) || 'null');
     } catch { /* ignore broken data */ }
     if (!Array.isArray(data) || data.length !== BIN_COUNT) return;
-    const load = (src) => new Promise((resolve, reject) => {
-      const img = new Image();
-      img.onload = () => resolve(img);
-      img.onerror = reject;
-      img.src = src;
-    });
     await Promise.all(data.map(async (d, i) => {
       if (!d) return;
       try {
-        const img = await load(d.img);
+        const img = await loadImage(d.img);
         const canvas = document.createElement('canvas');
         canvas.width = img.naturalWidth;
         canvas.height = img.naturalHeight;
@@ -121,4 +115,47 @@ export class MouthSamples {
     }));
     this.version++;
   }
+}
+
+const loadImage = (src) => new Promise((resolve, reject) => {
+  const img = new Image();
+  img.onload = () => resolve(img);
+  img.onerror = reject;
+  img.src = src;
+});
+
+// A sample made from a still image (e.g. a generated character with its mouth open).
+export function sampleFromImage(canvas, landmarks) {
+  return { canvas, landmarks, gap: lipGap(landmarks, canvas.width, canvas.height) };
+}
+
+export function saveSampleList(key, list) {
+  try {
+    localStorage.setItem(key, JSON.stringify(list.map((s) => ({
+      img: s.canvas.toDataURL('image/jpeg', 0.85),
+      landmarks: s.landmarks.map((q) => [+q.x.toFixed(5), +q.y.toFixed(5), +q.z.toFixed(5)]),
+    }))));
+  } catch {
+    console.warn('Could not save mouth samples in this browser');
+  }
+}
+
+export async function loadSampleList(key) {
+  let data = null;
+  try {
+    data = JSON.parse(localStorage.getItem(key) || 'null');
+  } catch { /* ignore broken data */ }
+  if (!Array.isArray(data)) return [];
+  const out = [];
+  for (const d of data) {
+    try {
+      const img = await loadImage(d.img);
+      const canvas = document.createElement('canvas');
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      canvas.getContext('2d').drawImage(img, 0, 0);
+      out.push(sampleFromImage(canvas, d.landmarks.map(([x, y, z]) => ({ x, y, z }))));
+    } catch { /* skip a broken sample */ }
+  }
+  return out;
 }

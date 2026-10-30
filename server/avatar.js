@@ -1,6 +1,8 @@
-// Generates a stylised 3D-character version of the user's photo with Google Gemini.
-// The browser then animates that image exactly like the realistic avatar.
+// Generates a stylised 3D-character version of the user's photo with Google Gemini, plus copies of
+// that character with the mouth open (so it can talk with a real-looking mouth). The browser then
+// animates these images exactly like the realistic avatar.
 import express from 'express';
+import sharp from 'sharp';
 import { config } from './config.js';
 import { db, now, isSubscribed } from './db.js';
 import { msg } from './i18n.js';
@@ -30,12 +32,22 @@ export const AVATAR_STYLES = {
   },
 };
 
+// The same character with the mouth at three openings; the browser blends between them when talking.
+const KEEP = `Edit this image and change only the mouth. Keep everything else exactly the same: the same \
+character, face, eyes (open, looking straight at the camera), eyebrows, hair, glasses, facial hair, clothing, \
+colors, lighting, background, camera framing, head position and head size.`;
+const MOUTH_SHAPES = [
+  'The lips are parted a little, as if saying "eh" in the middle of a sentence, with the upper front teeth just visible.',
+  'The mouth is open as if saying "ah" while talking, showing the upper teeth and a little of the tongue.',
+  'The mouth is wide open as if saying a loud "aah", the jaw dropped, showing the upper and lower teeth and the tongue.',
+];
+
 const DAY = 24 * 60 * 60 * 1000;
 const inFlight = new Set();
 
 async function callGemini(prompt, mimeType, data) {
-  const { apiKey, model } = config.gemini;
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+  const { apiKey, model, apiBase } = config.gemini;
+  const res = await fetch(`${apiBase}/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
     body: JSON.stringify({
@@ -50,25 +62,36 @@ async function callGemini(prompt, mimeType, data) {
     const reason = json.error?.message || json.promptFeedback?.blockReason || json.candidates?.[0]?.finishReason || `HTTP ${res.status}`;
     throw Object.assign(new Error(`Gemini returned no image: ${reason}`), { blocked: res.ok });
   }
-  return image;
+  return { mimeType: image.mimeType || 'image/png', data: image.data };
 }
 
-export const avatarRouter = express.Router();
+// Gemini returns ~1.5 MB PNGs; JPEG is about ten times smaller to download, which matters on slow links.
+async function asJpegDataUrl(image) {
+  try {
+    const jpeg = await sharp(Buffer.from(image.data, 'base64')).jpeg({ quality: 88, mozjpeg: true }).toBuffer();
+    return `data:image/jpeg;base64,${jpeg.toString('base64')}`;
+  } catch {
+    return `data:${image.mimeType};base64,${image.data}`;
+  }
+}
 
-avatarRouter.get('/styles', (_req, res) => {
-  res.json({
-    available: !!config.gemini.apiKey,
-    styles: Object.entries(AVATAR_STYLES).map(([id, s]) => ({ id, name: s.name })),
-  });
-});
+// Mouth-open versions of a character image; shapes Gemini refuses or fails on are simply skipped.
+async function mouthVariants(image) {
+  const results = await Promise.allSettled(MOUTH_SHAPES.map((shape) => callGemini(`${KEEP} ${shape}`, image.mimeType, image.data)));
+  const ok = results.filter((r) => r.status === 'fulfilled').map((r) => r.value);
+  for (const r of results) if (r.status === 'rejected') console.error('Mouth variant failed:', r.reason.message);
+  return Promise.all(ok.map(asJpegDataUrl));
+}
 
-avatarRouter.post('/generate', express.json({ limit: '4mb' }), async (req, res) => {
+const parseImage = (value) => {
+  const m = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(String(value || ''));
+  return m && { mimeType: m[1], data: m[2] };
+};
+
+// Daily quotas per visitor (account or IP) and for the whole site, to protect the API budget.
+// Runs the job when allowed; a failed job does not count against the quota.
+async function withQuota(req, res, style, job) {
   if (!config.gemini.apiKey) return res.status(503).json({ error: msg(req, 'generation_unavailable') });
-  const style = AVATAR_STYLES[req.body?.style] ? req.body.style : 'animated';
-  const m = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(String(req.body?.image || ''));
-  if (!m) return res.status(400).json({ error: msg(req, 'bad_photo') });
-
-  // Quotas: per visitor (account or IP) per day, plus a site-wide daily cap to protect the API budget.
   const since = now() - DAY;
   const who = req.user ? ['user_id', req.user.id] : ['ip', req.ip];
   const key = `${who[0]}:${who[1]}`;
@@ -92,11 +115,8 @@ avatarRouter.post('/generate', express.json({ limit: '4mb' }), async (req, res) 
     .prepare('INSERT INTO generations (user_id, ip, style, created_at) VALUES (?, ?, ?, ?)')
     .run(req.user?.id ?? null, req.ip, style, now());
   try {
-    const prompt = `Turn the person in this photo into ${AVATAR_STYLES[style].prompt}. ${IDENTITY}`;
-    const image = await callGemini(prompt, m[1], m[2]);
-    res.json({ image: `data:${image.mimeType || 'image/png'};base64,${image.data}`, style });
+    res.json(await job());
   } catch (err) {
-    // Failed attempts do not count against the visitor's quota.
     db.prepare('DELETE FROM generations WHERE id = ?').run(Number(lastInsertRowid));
     console.error('Avatar generation failed:', err.message);
     res.status(err.blocked ? 422 : 502).json({
@@ -105,4 +125,33 @@ avatarRouter.post('/generate', express.json({ limit: '4mb' }), async (req, res) 
   } finally {
     inFlight.delete(key);
   }
+}
+
+export const avatarRouter = express.Router();
+
+avatarRouter.get('/styles', (_req, res) => {
+  res.json({
+    available: !!config.gemini.apiKey,
+    styles: Object.entries(AVATAR_STYLES).map(([id, s]) => ({ id, name: s.name })),
+  });
+});
+
+// Photo -> character, plus its mouth-open versions (one quota unit).
+avatarRouter.post('/generate', express.json({ limit: '4mb' }), async (req, res) => {
+  const style = AVATAR_STYLES[req.body?.style] ? req.body.style : 'animated';
+  const photo = parseImage(req.body?.image);
+  if (!photo) return res.status(400).json({ error: msg(req, 'bad_photo') });
+  await withQuota(req, res, style, async () => {
+    const prompt = `Turn the person in this photo into ${AVATAR_STYLES[style].prompt}. ${IDENTITY}`;
+    const character = await callGemini(prompt, photo.mimeType, photo.data);
+    const [image, mouths] = await Promise.all([asJpegDataUrl(character), mouthVariants(character)]);
+    return { image, mouths, style };
+  });
+});
+
+// Mouth-open versions for a character made before they existed (one quota unit).
+avatarRouter.post('/mouths', express.json({ limit: '4mb' }), async (req, res) => {
+  const character = parseImage(req.body?.image);
+  if (!character) return res.status(400).json({ error: msg(req, 'bad_photo') });
+  await withQuota(req, res, 'mouths', async () => ({ mouths: await mouthVariants(character) }));
 });

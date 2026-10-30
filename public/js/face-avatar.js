@@ -16,24 +16,32 @@ const smoothstep = (a, b, x) => {
 const VERTEX_SHADER = `
 attribute vec3 aPos;
 attribute vec2 aUv;
+attribute float aMask;
 uniform vec4 uView;   // scale.xy, offset.xy (image px -> clip space)
 uniform float uDepth;
 varying vec2 vUv;
+varying float vMask;
 void main() {
   vUv = aUv;
+  vMask = aMask;
   gl_Position = vec4(aPos.xy * uView.xy + uView.zw, clamp(aPos.z * uDepth, -0.99, 0.99), 1.0);
 }`;
 
-// uFeather fades a mouth-sample frame out towards its crop edges so it blends into the portrait.
+// Mouth-sample frames only show around the mouth and jaw (vMask) and fade out towards their crop
+// edges (uFeather), so the eyes, hair and background always come from the portrait.
 const FRAGMENT_SHADER = `
 precision mediump float;
 uniform sampler2D uTex;
 uniform float uAlpha;
 uniform float uFeather;
 varying vec2 vUv;
+varying float vMask;
 void main() {
-  float edge = min(min(vUv.x, 1.0 - vUv.x), min(vUv.y, 1.0 - vUv.y));
-  float a = uAlpha * (uFeather > 0.0 ? smoothstep(0.0, uFeather, edge) : 1.0);
+  float a = uAlpha;
+  if (uFeather > 0.0) {
+    float edge = min(min(vUv.x, 1.0 - vUv.x), min(vUv.y, 1.0 - vUv.y));
+    a *= smoothstep(0.0, uFeather, edge) * vMask;
+  }
   gl_FragColor = vec4(texture2D(uTex, vUv).rgb, a);
 }`;
 
@@ -111,6 +119,7 @@ export class FaceAvatar {
     this.loc = {
       aPos: gl.getAttribLocation(prog, 'aPos'),
       aUv: gl.getAttribLocation(prog, 'aUv'),
+      aMask: gl.getAttribLocation(prog, 'aMask'),
       uView: gl.getUniformLocation(prog, 'uView'),
       uDepth: gl.getUniformLocation(prog, 'uDepth'),
       uAlpha: gl.getUniformLocation(prog, 'uAlpha'),
@@ -118,6 +127,7 @@ export class FaceAvatar {
     };
     this.posBuf = gl.createBuffer();
     this.uvBuf = gl.createBuffer();
+    this.maskBuf = gl.createBuffer();
     this.idxBuf = gl.createBuffer();
     this.tex = gl.createTexture();
     this.face = null;
@@ -219,6 +229,10 @@ export class FaceAvatar {
     pts.forEach((p, i) => { uvs[i * 2] = p[0] / W; uvs[i * 2 + 1] = p[1] / H; });
     gl.bindBuffer(gl.ARRAY_BUFFER, this.uvBuf);
     gl.bufferData(gl.ARRAY_BUFFER, uvs, gl.STATIC_DRAW);
+    // Where mouth samples may show: lips, chin and lower cheeks, fading out well below the eyes.
+    const mask = Float32Array.from(pts, (p) => 1 - smoothstep(0.24 * faceH, 0.42 * faceH, dist(p, mouthC)));
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.maskBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, mask, gl.STATIC_DRAW);
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.idxBuf);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl.STATIC_DRAW);
 
@@ -420,6 +434,9 @@ export class FaceAvatar {
       gl.bindBuffer(gl.ARRAY_BUFFER, uvBuf);
       gl.enableVertexAttribArray(this.loc.aUv);
       gl.vertexAttribPointer(this.loc.aUv, 2, gl.FLOAT, false, 0, 0);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.maskBuf);
+      gl.enableVertexAttribArray(this.loc.aMask);
+      gl.vertexAttribPointer(this.loc.aMask, 1, gl.FLOAT, false, 0, 0);
       gl.bindTexture(gl.TEXTURE_2D, tex);
       gl.drawElements(gl.TRIANGLES, f.indices, gl.UNSIGNED_SHORT, 0);
     };
@@ -439,7 +456,8 @@ export class FaceAvatar {
     draw(this.deform(still, relativePose, true), this.tex, this.uvBuf, 1, 0);
     const [a, b, t] = this.pickSamples(mouthGap);
     gl.enable(gl.BLEND);
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    // Blend colour only; the canvas itself must stay opaque or the page background shows through.
+    gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
     for (const [sm, alpha] of [[a, 1], [b, t]]) {
       if (!sm || alpha < 0.02) continue;
       gl.clear(gl.DEPTH_BUFFER_BIT);

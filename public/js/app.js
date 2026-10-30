@@ -3,7 +3,7 @@ import { FaceTracker, detectImage, loadFaceAssets } from './tracker.js';
 import { createParams, paramsFromResult, smoothParams, IdleAnimator } from './face-params.js';
 import { FaceAvatar } from './face-avatar.js';
 import { Speaker, unlockAudio, detectLang } from './speech.js';
-import { MouthSamples, BIN_COUNT } from './mouth-samples.js';
+import { MouthSamples, BIN_COUNT, lipGap, sampleFromImage, saveSampleList, loadSampleList } from './mouth-samples.js';
 import { t, lang, setLanguage, applyLanguage, formatNumber, formatDate } from './i18n.js';
 
 const $ = (id) => document.getElementById(id);
@@ -48,6 +48,7 @@ const state = {
   faceVisible: false,
   cameraError: null,
   modelProgress: 0,
+  liveGap: 0,
   modelError: false,
   // Portraits the avatar can animate: the user's photo and the characters generated from it.
   real: null,
@@ -396,6 +397,7 @@ async function loadStyles() {
 // ---------- portraits: capture, upload, generation, persistence ----------
 const REAL_KEY = 'avatar.face';
 const charKey = (style) => `avatar.character.${style}`;
+const charMouthsKey = (style) => `avatar.character.${style}.mouths`;
 
 // Detects the face in an image and returns everything the avatar needs to animate it.
 async function makePortrait(canvas, mirrored) {
@@ -439,7 +441,10 @@ async function loadPortrait(key) {
 
 function forgetFace() {
   store.remove(REAL_KEY);
-  for (const s of state.styles) store.remove(charKey(s.id));
+  for (const s of state.styles) {
+    store.remove(charKey(s.id));
+    store.remove(charMouthsKey(s.id));
+  }
   state.real = null;
   state.generated = {};
   state.generationError = null;
@@ -486,9 +491,10 @@ async function generateCharacter(style) {
   state.generationError = null;
   renderStage();
   try {
-    const { image } = await api.generateAvatar(portraitCrop(state.real), style);
+    const { image, mouths } = await api.generateAvatar(portraitCrop(state.real), style);
     const portrait = await makePortrait(imageToCanvas(await loadImage(image)), state.real.mirrored);
     if (!portrait) throw new Error(t('no_face_generated'));
+    await attachCharacterMouths(style, portrait, mouths);
     state.generated[style] = portrait;
     savePortrait(charKey(style), portrait);
     if (state.look === style) toast(t('character_ready'), 'ok');
@@ -502,9 +508,40 @@ async function generateCharacter(style) {
   }
 }
 
+// The character's mouth-open images become mouth samples (with the closed-mouth character itself).
+async function attachCharacterMouths(style, portrait, images) {
+  const samples = [sampleFromImage(portrait.canvas, portrait.landmarks)];
+  for (const src of images || []) {
+    try {
+      const canvas = imageToCanvas(await loadImage(src));
+      const landmarks = (await detectImage(canvas)).faceLandmarks?.[0];
+      if (landmarks) samples.push(sampleFromImage(canvas, landmarks.slice(0, 468)));
+    } catch (err) {
+      console.warn('Mouth image skipped', err);
+    }
+  }
+  portrait.mouths = samples;
+  saveSampleList(charMouthsKey(style), samples.slice(1));
+}
+
+// Characters made before mouth images existed get them once, in the background.
+const mouthsRequested = new Set();
+async function ensureCharacterMouths(style) {
+  const portrait = state.generated[style];
+  if (!portrait || portrait.mouths?.length > 1 || mouthsRequested.has(style) || !state.generationAvailable) return;
+  mouthsRequested.add(style);
+  try {
+    const { mouths } = await api.avatarMouths(portrait.canvas.toDataURL('image/jpeg', 0.9));
+    await attachCharacterMouths(style, portrait, mouths);
+  } catch (err) {
+    console.warn('Mouth images unavailable', err);
+  }
+}
+
 $('btn-regenerate').addEventListener('click', () => {
   delete state.generated[state.look];
   store.remove(charKey(state.look));
+  store.remove(charMouthsKey(state.look));
   renderStage();
 });
 
@@ -584,7 +621,9 @@ async function restorePortraits() {
   if (!state.real) return;
   for (const s of state.styles) {
     const p = await loadPortrait(charKey(s.id));
-    if (p) state.generated[s.id] = p;
+    if (!p) continue;
+    p.mouths = [sampleFromImage(p.canvas, p.landmarks), ...(await loadSampleList(charMouthsKey(s.id)))];
+    state.generated[s.id] = p;
   }
 }
 
@@ -851,13 +890,26 @@ function frame(now) {
 
   if (usesCharacter()) characters?.update(live, dt);
   else if (faceAvatar?.ready && !liveCameraShown) {
+    // Mouth images to use: the user's real frames (realistic) or the character's mouth-open images.
     const realistic = state.mode === 'realistic';
-    if (realistic && mouths.version !== mouthsApplied) {
-      faceAvatar.setMouthSamples(mouths.list());
-      mouthsApplied = mouths.version;
+    const character = state.generated[state.look];
+    const samples = realistic ? (mouths.ready ? mouths.list() : []) : character?.mouths || [];
+    const samplesKey = realistic ? `real:${mouths.ready}:${mouths.version}` : `char:${state.look}:${samples.length}`;
+    if (samplesKey !== mouthsApplied) {
+      faceAvatar.setMouthSamples(samples);
+      mouthsApplied = samplesKey;
     }
-    // Speech drives the realistic mouth through the real frames (lip gap ≈ 0.6 × jaw opening).
-    const mouthGap = realistic && mouth && mouths.ready ? mouth.jawOpen * 0.6 : null;
+    if (!realistic && character && samples.length < 2) ensureCharacterMouths(state.look);
+    // Lip gap (gap / mouth width) to show: from speech, or (character only) from the user's own mouth.
+    if (tracked) {
+      const g = lipGap(result.faceLandmarks[0], video.videoWidth, video.videoHeight);
+      state.liveGap += (g - state.liveGap) * Math.min(1, dt * 18);
+    }
+    let mouthGap = null;
+    if (samples.length > 1) {
+      if (mouth) mouthGap = mouth.jawOpen * 0.6;
+      else if (!realistic) mouthGap = tracked ? state.liveGap : 0;
+    }
     faceAvatar.update(live, dt, { relativePose: !tracked, mouthFromSpeech: !!mouth, mouthGap });
   }
 

@@ -24,5 +24,6 @@ export const api = {
   voices: () => request('GET', '/api/tts/voices'),
   avatarStyles: () => request('GET', '/api/avatar/styles'),
   generateAvatar: (image, style) => request('POST', '/api/avatar/generate', { image, style }),
+  avatarMouths: (image) => request('POST', '/api/avatar/mouths', { image }),
   tts: (text, voice, speed) => request('POST', '/api/tts', { text, voice, speed }, { binary: true }),
 };
