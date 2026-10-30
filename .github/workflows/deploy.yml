@@ -25,7 +25,7 @@ jobs:
       - name: Prepare SSH and deploy settings
         env:
           SSH_KEY: ${{ secrets.SSH_KEY }}
-          DOMAIN: ${{ vars.DOMAIN || 'avatar.pythonpath.ir' }}
+          DOMAIN: ${{ vars.DOMAIN || 'avatar.tamirdesk.ir' }}
           ZARINPAL_MERCHANT_ID: ${{ secrets.ZARINPAL_MERCHANT_ID }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           ZARINPAL_SANDBOX: ${{ vars.ZARINPAL_SANDBOX }}

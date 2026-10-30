@@ -49,7 +49,7 @@ app and the voice service with systemd (`avatar-web`, `avatar-tts`), adds an ngi
 Let's Encrypt certificate.
 
 Repository secrets: `SSH_HOST`, `SSH_USER`, `SSH_KEY`, `ZARINPAL_MERCHANT_ID`, `GEMINI_API_KEY`.
-Optional repository variables: `DOMAIN` (default `avatar.pythonpath.ir`), `ZARINPAL_SANDBOX`,
+Optional repository variables: `DOMAIN` (default `avatar.tamirdesk.ir`), `ZARINPAL_SANDBOX`,
 `GEMINI_IMAGE_MODEL`, `PLAN_MONTHLY_TOMAN`, `PLAN_QUARTERLY_TOMAN`, `AVATAR_DAILY_LIMIT`,
 `AVATAR_FREE_LIMIT`, `AVATAR_SUBSCRIBER_LIMIT`.
 
