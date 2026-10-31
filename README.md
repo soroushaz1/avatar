@@ -41,6 +41,7 @@ nose and colour-matched), so the nose and skin never flicker (`public/js/face-av
 | Face tracking | Browser (MediaPipe Face Landmarker) | Video never leaves the browser |
 | Avatar animation | Browser (WebGL mesh warp, three.js for ready-made characters) | `public/js/face-avatar.js`, `public/js/fantasy.js` |
 | 3D character | Server → Google Gemini | Photo sent once, after the visitor agrees; `server/avatar.js` |
+| Saved characters | Server (`DATA_DIR/characters/`, SQLite) | A logged-in user's last 30 characters, private to them; `server/characters.js` |
 | Text to speech | Server (`tts/server.py`, Piper + ffmpeg) | Subscribers only (plus a demo sentence); returns MP3 and phoneme timings |
 | Video | Browser (canvas + MediaRecorder) | MP4 where the browser supports it, otherwise WebM; `public/js/recorder.js` |
 | Accounts, payments | Server (Express + SQLite) | `server/auth.js`, `server/payment.js` |

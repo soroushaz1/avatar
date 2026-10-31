@@ -6,6 +6,7 @@ import { sessionMiddleware, authRouter } from './auth.js';
 import { paymentRouter } from './payment.js';
 import { ttsRouter } from './tts.js';
 import { avatarRouter } from './avatar.js';
+import { charactersRouter } from './characters.js';
 import { langMiddleware, msg } from './i18n.js';
 
 const app = express();
@@ -47,6 +48,7 @@ app.use('/api', (req, res, next) => {
 
 // Photo uploads need a bigger body limit than the rest of the API.
 app.use('/api/avatar', avatarRouter);
+app.use('/api/characters', charactersRouter);
 app.use(express.json({ limit: '32kb' }));
 
 app.use('/api/auth', authRouter);

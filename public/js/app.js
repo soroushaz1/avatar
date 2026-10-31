@@ -63,6 +63,10 @@ const state = {
   authTab: 'login',
   // While a video is being recorded: { recorder, cancelled }.
   recording: null,
+  // The characters kept in the user's account ([{ id, style, thumb, image, visemes, ... }]).
+  saved: [],
+  savedLoaded: false,
+  savedError: null,
 };
 
 const video = $('video');
@@ -85,9 +89,11 @@ const speaker = new Speaker();
 const mouths = new MouthSamples();
 
 const usesCharacter = () => state.mode === 'fantasy' && state.look.startsWith('char:');
+// A character kept in the user's account ("saved:<id>"); it needs no face capture.
+const usesSaved = () => state.mode === 'fantasy' && state.look.startsWith('saved:');
 // The portrait that should be on screen right now (null while it still has to be captured/created).
 const wantedPortrait = () => (usesCharacter() ? null : state.mode === 'realistic' ? state.real : state.generated[state.look] || null);
-const needsCapture = () => !usesCharacter() && !state.real;
+const needsCapture = () => !usesCharacter() && !usesSaved() && !state.real;
 
 // ---------- small UI helpers ----------
 let toastTimer = null;
@@ -254,7 +260,7 @@ let liveCameraShown = false;
 // and, for the realistic avatar, to record the mouth shapes. It turns on when it becomes needed and
 // off when it no longer is (the camera button still works in between).
 function cameraNeeded() {
-  if (usesCharacter()) return false;
+  if (usesCharacter() || usesSaved()) return false;
   if (!state.real) return true;
   return state.mode === 'realistic' && (!mouths.ready || (tracker.cameraOn && !!nextCoachTarget()));
 }
@@ -298,7 +304,7 @@ function renderStage() {
   $('style-card').hidden = state.mode !== 'fantasy';
   $('btn-reset-face').hidden = !state.real;
   $('btn-capture').textContent = t(state.real ? 'capture_again' : 'capture_from_camera');
-  $('btn-regenerate').hidden = charMode || !state.generated[state.look] || !!state.generating;
+  $('btn-regenerate').hidden = charMode || usesSaved() || !state.generated[state.look] || !!state.generating;
 
   renderOverlay(capturing);
   renderCamera();
@@ -402,6 +408,19 @@ function renderOverlay(capturing) {
   }
   if (capturing || state.mode !== 'fantasy' || usesCharacter() || state.generated[state.look]) return hideOverlay();
 
+  if (usesSaved()) {
+    const id = Number(state.look.slice(6));
+    if (state.savedError) {
+      return showOverlay({
+        title: t('saved_failed_title'),
+        text: state.savedError,
+        actions: [{ label: t('try_again'), primary: true, onClick: () => { state.savedError = null; renderStage(); } }],
+      });
+    }
+    loadSavedCharacter(id);
+    return showOverlay({ title: t('loading_character'), text: '', busy: true });
+  }
+
   // Fantasy mode with a captured face but no character in this style yet.
   const readyMade = { label: t('use_ready_made'), onClick: () => setLook(`char:${CHARACTERS[0]}`) };
   if (state.generating) {
@@ -473,7 +492,129 @@ function renderLooks() {
   $('characters').replaceChildren(...CHARACTERS.map((id) =>
     chip(CHARACTER_ICONS[id], t(`char_${id}`), state.look === `char:${id}`, () => setLook(`char:${id}`))));
   if (state.look.startsWith('char:')) $('characters-box').open = true;
+  renderSaved();
 }
+
+// The characters kept in the user's account, newest first.
+function renderSaved() {
+  $('saved-list').replaceChildren(...state.saved.map((c) => {
+    const item = document.createElement('div');
+    item.className = `saved-item${state.look === `saved:${c.id}` ? ' active' : ''}`;
+    const pick = document.createElement('button');
+    pick.className = 'saved-pick';
+    pick.title = `${t(`style_${c.style}`)} · ${formatDate(new Date(c.createdAt))}`;
+    const img = document.createElement('img');
+    img.src = c.thumb;
+    img.alt = pick.title;
+    img.loading = 'lazy';
+    pick.append(img);
+    pick.addEventListener('click', () => setLook(`saved:${c.id}`));
+    const del = document.createElement('button');
+    del.className = 'saved-delete';
+    del.textContent = '×';
+    del.title = t('delete_character');
+    del.setAttribute('aria-label', t('delete_character'));
+    del.addEventListener('click', () => deleteSaved(c.id));
+    item.append(pick, del);
+    return item;
+  }));
+  const hint = !state.user ? t('saved_login_hint') : state.saved.length ? t('saved_note', { n: formatNumber(30) }) : t('saved_empty');
+  $('saved-hint').textContent = state.savedLoaded || !state.user ? hint : '';
+  $('saved-login').hidden = !!state.user;
+}
+
+async function refreshSaved() {
+  if (!state.user) {
+    state.saved = [];
+    state.savedLoaded = false;
+  } else {
+    try {
+      state.saved = (await api.characters()).characters;
+      state.savedLoaded = true;
+    } catch (err) {
+      console.warn('Saved characters unavailable', err);
+    }
+  }
+  // A saved character that is gone (deleted, or logged out) is replaced by the first style.
+  if (state.look.startsWith('saved:') && (!state.user || (state.savedLoaded && !state.saved.some((c) => `saved:${c.id}` === state.look)))) {
+    setLook(state.styles[0]?.id || 'animated');
+  }
+  renderSaved();
+  renderStage();
+}
+
+const savedLoading = new Set();
+async function loadSavedCharacter(id) {
+  const key = `saved:${id}`;
+  const info = state.saved.find((c) => c.id === id);
+  // Before the list arrives there is nothing to load yet; refreshSaved renders again.
+  if (!info || state.generated[key] || savedLoading.has(id)) return;
+  savedLoading.add(id);
+  state.savedError = null;
+  try {
+    const portrait = await makePortrait(imageToCanvas(await loadImage(info.image)), info.mirrored);
+    if (!portrait) throw new Error(t('no_face_generated'));
+    portrait.visemes = await visemeSet(info.visemes);
+    portrait.savedId = id;
+    state.generated[key] = portrait;
+  } catch (err) {
+    console.warn('Saved character failed to load', err);
+    state.savedError = err.message || t('network_error');
+  } finally {
+    savedLoading.delete(id);
+    renderStage();
+  }
+}
+
+async function deleteSaved(id) {
+  if (!confirm(t('delete_character_confirm'))) return;
+  try {
+    await api.deleteCharacter(id);
+  } catch (err) {
+    return toast(err.message, 'err');
+  }
+  state.saved = state.saved.filter((c) => c.id !== id);
+  delete state.generated[`saved:${id}`];
+  if (state.look === `saved:${id}`) setLook(state.styles[0]?.id || 'animated');
+  renderSaved();
+}
+
+// Characters made in this browser before they could be kept (or by a visitor who logged in later) are
+// added to the account once.
+async function uploadLocalCharacters() {
+  if (!state.user) return;
+  let added = false;
+  for (const s of state.styles) {
+    const p = state.generated[s.id];
+    if (!p || p.savedId || p.uploading) continue;
+    p.uploading = true;
+    try {
+      const { character } = await api.saveCharacter({
+        style: s.id,
+        mirrored: p.mirrored,
+        image: p.canvas.toDataURL('image/jpeg', 0.9),
+        visemes: Object.entries(p.visemes || {}).map(([id, v]) => ({ id, image: v.canvas.toDataURL('image/jpeg', 0.9) })),
+      });
+      p.savedId = character.id;
+      savePortrait(charKey(s.id), p);
+      added = true;
+    } catch (err) {
+      console.warn('Character could not be added to the account', err);
+    } finally {
+      p.uploading = false;
+    }
+  }
+  if (added) refreshSaved();
+}
+
+function onAccountChanged() {
+  if (!state.user) {
+    for (const key of Object.keys(state.generated)) if (key.startsWith('saved:')) delete state.generated[key];
+  }
+  refreshSaved().then(uploadLocalCharacters);
+}
+
+$('saved-login').addEventListener('click', () => openAuth('login'));
 
 async function loadStyles() {
   try {
@@ -484,7 +625,7 @@ async function loadStyles() {
     state.styles = [{ id: 'animated', name: '3D Animated' }];
     state.generationAvailable = false;
   }
-  if (!state.look.startsWith('char:') && !state.styles.some((s) => s.id === state.look)) state.look = state.styles[0].id;
+  if (!/^(char|saved):/.test(state.look) && !state.styles.some((s) => s.id === state.look)) state.look = state.styles[0].id;
   renderLooks();
 }
 
@@ -515,6 +656,8 @@ function savePortrait(key, portrait) {
     landmarks: portrait.landmarks.map((p) => [+p.x.toFixed(5), +p.y.toFixed(5), +p.z.toFixed(5)]),
     restPose: portrait.restPose,
     mirrored: portrait.mirrored,
+    // The same character in the user's account, if it is kept there.
+    savedId: portrait.savedId ?? null,
   });
   if (!ok) console.warn('Could not save the avatar in this browser');
 }
@@ -528,6 +671,7 @@ async function loadPortrait(key) {
       landmarks: saved.landmarks.map(([x, y, z]) => ({ x, y, z })),
       restPose: saved.restPose,
       mirrored: saved.mirrored,
+      savedId: saved.savedId ?? null,
     };
   } catch {
     store.remove(key);
@@ -633,12 +777,15 @@ async function generateCharacter(style) {
   state.generationError = null;
   renderStage();
   try {
-    const { image, visemes } = await api.generateAvatar(portraitCrop(state.real), style);
+    const { image, visemes, id } = await api.generateAvatar(portraitCrop(state.real), style, state.real.mirrored);
     const portrait = await makePortrait(imageToCanvas(await loadImage(image)), state.real.mirrored);
     if (!portrait) throw new Error(t('no_face_generated'));
     await attachCharacterVisemes(style, portrait, visemes);
+    // Logged-in users' characters are kept in their account too.
+    portrait.savedId = id ?? null;
     state.generated[style] = portrait;
     savePortrait(charKey(style), portrait);
+    if (id) refreshSaved();
     if (state.look === style) toast(t('character_ready'), 'ok');
   } catch (err) {
     console.warn('Character generation failed', err);
@@ -652,6 +799,13 @@ async function generateCharacter(style) {
 
 // The character's images with the mouth in each shape (viseme) let it talk with a natural mouth.
 async function attachCharacterVisemes(style, portrait, images) {
+  portrait.visemes = await visemeSet(images);
+  saveSampleSet(charVisemesKey(style), portrait.visemes);
+  store.remove(oldCharMouthsKey(style));
+}
+
+// Mouth images ([{ id, image }]) with their face landmarks, by viseme.
+async function visemeSet(images) {
   const set = {};
   await Promise.all((images || []).map(async ({ id, image }) => {
     if (!VISEME_IDS.includes(id)) return;
@@ -663,9 +817,7 @@ async function attachCharacterVisemes(style, portrait, images) {
       console.warn('Mouth image skipped', err);
     }
   }));
-  portrait.visemes = set;
-  saveSampleSet(charVisemesKey(style), set);
-  store.remove(oldCharMouthsKey(style));
+  return set;
 }
 
 // Characters made before every mouth shape existed get them once, in the background.
@@ -827,6 +979,7 @@ async function refreshMe() {
     state.user = null;
   }
   renderAccount();
+  onAccountChanged();
 }
 
 function openAuth(tab = 'login', afterLogin = null) {
@@ -858,6 +1011,7 @@ $('auth-form').addEventListener('submit', async (e) => {
     const { user } = state.authTab === 'login' ? await api.login(login, password) : await api.register(login, password);
     state.user = user;
     renderAccount();
+    onAccountChanged();
     $('auth-dialog').close();
     $('auth-password').value = '';
     toast(t(state.authTab === 'login' ? 'welcome_back' : 'account_ready'), 'ok');
@@ -877,6 +1031,7 @@ $('btn-logout').addEventListener('click', async () => {
   await api.logout().catch(() => {});
   state.user = null;
   renderAccount();
+  onAccountChanged();
 });
 
 function renderPlans() {
@@ -1274,7 +1429,7 @@ function step(now) {
       faceAvatar.setMouthSamples(samples);
       mouthsApplied = samplesKey;
     }
-    if (!realistic && character && Object.keys(samples).length < 4) ensureCharacterMouths(state.look);
+    if (!realistic && character && !usesSaved() && Object.keys(samples).length < 4) ensureCharacterMouths(state.look);
     let visemes = null;
     if (faceAvatar.hasMouthSamples) visemes = mouth ? mouth.visemes || [['AA', Math.min(1, mouth.jawOpen * 1.6)]] : [];
     faceAvatar.update(live, dt, { relativePose: true, mouthFromSpeech: !!mouth, visemes });

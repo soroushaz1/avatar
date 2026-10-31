@@ -7,6 +7,7 @@ import { config } from './config.js';
 import { db, now, isSubscribed } from './db.js';
 import { msg } from './i18n.js';
 import { normalizeLogin } from './auth.js';
+import { saveCharacter } from './characters.js';
 
 const identity = (who) => `${who} must be instantly recognizable as this exact person: keep the same face shape, \
 skin tone, eye color, eyebrows, nose, lips, hairstyle and hair color, facial hair and similar clothing. Show only \
@@ -174,7 +175,14 @@ avatarRouter.post('/generate', express.json({ limit: '4mb' }), async (req, res) 
     const prompt = `Turn the person in this photo into ${AVATAR_STYLES[style].prompt}. ${identity('The character')} ${COMPOSE}`;
     const character = await callGemini(prompt, photo.mimeType, photo.data);
     const [image, visemes] = await Promise.all([asJpegDataUrl(character), visemeImages(character)]);
-    return { image, visemes, style };
+    // Kept in the user's account, to be used again later.
+    const id = req.user
+      ? await saveCharacter(req.user.id, { style, mirrored: !!req.body.mirrored, image, visemes }).catch((err) => {
+        console.error('Saving a character failed:', err.message);
+        return null;
+      })
+      : null;
+    return { image, visemes, style, id };
   });
 });
 

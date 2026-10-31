@@ -23,7 +23,11 @@ export const api = {
   pay: (planId) => request('POST', '/api/pay/request', { planId }),
   voices: () => request('GET', '/api/tts/voices'),
   avatarStyles: () => request('GET', '/api/avatar/styles'),
-  generateAvatar: (image, style) => request('POST', '/api/avatar/generate', { image, style }),
+  generateAvatar: (image, style, mirrored) => request('POST', '/api/avatar/generate', { image, style, mirrored }),
+  // The user's saved 3D characters.
+  characters: () => request('GET', '/api/characters'),
+  saveCharacter: (character) => request('POST', '/api/characters', character),
+  deleteCharacter: (id) => request('DELETE', `/api/characters/${id}`, {}),
   avatarMouths: (image) => request('POST', '/api/avatar/mouths', { image }),
   completePhoto: (image) => request('POST', '/api/avatar/complete', { image }),
   // Speech as { audio (base64), mime, phonemes: [[phoneme, start, duration]] }.
