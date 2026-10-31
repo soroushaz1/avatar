@@ -10,8 +10,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      SSH_HOST: ${{ secrets.SSH_HOST }}
-      SSH_USER: ${{ secrets.SSH_USER }}
+      SSH_HOST: ${{ secrets.IR_SSH_HOST }}
+      SSH_USER: ${{ secrets.IR_SSH_USER }}
+      SSH_PORT: ${{ secrets.IR_SSH_PORT }}
       SSH_KEY: ${{ secrets.SSH_KEY }}
       ZARINPAL_MERCHANT_ID: ${{ secrets.ZARINPAL_MERCHANT_ID }}
     steps:
@@ -35,7 +36,7 @@ jobs:
           printf '%s\n' "$SSH_KEY" | tr -d '\r' > ~/.ssh/id_deploy
           chmod 600 ~/.ssh/id_deploy
           ssh-keygen -y -f ~/.ssh/id_deploy > /dev/null || { echo "::error::SSH_KEY is not a valid private key"; exit 1; }
-          ssh -i ~/.ssh/id_deploy -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=20 \
+          ssh -i ~/.ssh/id_deploy -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=30 -p "$(echo "${SSH_PORT:-22}" | tr -d '[:space:]')" \
             "$(echo "$SSH_USER" | tr -d '[:space:]')@$(echo "$SSH_HOST" | tr -d '[:space:]')" 'bash -s' <<'EOF'
           echo "Connected as $(whoami)"
           . /etc/os-release && echo "OS: $PRETTY_NAME"
