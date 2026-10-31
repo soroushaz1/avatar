@@ -78,8 +78,14 @@ jobs:
             # Google applies its country restrictions when generating, so try a tiny real request too.
             code=$(curl -s -m 30 -o /tmp/gemini.json -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
               -H "x-goog-api-key: $GEMINI_API_KEY" -d '{"contents":[{"parts":[{"text":"Reply with the single word OK."}]}]}' \
-              "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent" 2>/dev/null || echo 'no connection')
-            echo "Generate: HTTP $code: $(python3 -c 'import json; j = json.load(open("/tmp/gemini.json")); print(j.get("error", {}).get("message") or j["candidates"][0]["content"]["parts"][0]["text"].strip())' 2>/dev/null | head -c 200)"
+              "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent" 2>/dev/null || echo 'no connection')
+            echo "Generate text: HTTP $code: $(python3 -c 'import json; j = json.load(open("/tmp/gemini.json")); print(j.get("error", {}).get("message") or j["candidates"][0]["content"]["parts"][0]["text"].strip())' 2>/dev/null | head -c 200)"
+            # The speech model the site uses for its female voices.
+            code=$(curl -s -m 60 -o /tmp/gemini.json -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+              -H "x-goog-api-key: $GEMINI_API_KEY" \
+              -d '{"contents":[{"parts":[{"text":"سلام"}]}],"generationConfig":{"responseModalities":["AUDIO"],"speechConfig":{"voiceConfig":{"prebuiltVoiceConfig":{"voiceName":"Leda"}}}}}' \
+              "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent" 2>/dev/null || echo 'no connection')
+            echo "Generate speech: HTTP $code: $(python3 -c 'import json; j = json.load(open("/tmp/gemini.json")); e = j.get("error", {}).get("message"); print(e or "audio, %d bytes" % (len(j["candidates"][0]["content"]["parts"][0]["inlineData"]["data"]) * 3 // 4))' 2>/dev/null | head -c 200)"
             rm -f /tmp/gemini.json
           fi
           EOF
