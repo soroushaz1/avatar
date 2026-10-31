@@ -1,0 +1,182 @@
+name: Migrate to the Iranian server
+
+# Moves the site from the earlier server abroad (SSH_HOST) to the Iranian server (IR_SSH_HOST).
+#   prepare  Copies the HTTPS certificate (when the new server has none) and a snapshot of the data (users,
+#            subscriptions, payments, saved characters) to the new server. The old server keeps serving the
+#            site; this can run again, and replaces the new server's data each time. Run Deploy (iran) after.
+#   final    Stops the app on the old server, copies the data a last time and makes the old server forward
+#            every visitor to the new one, so the site keeps working while DNS moves to the new server. From
+#            then on only the new server's data changes: deploying to the old server and running this again
+#            are refused.
+# Nothing sensitive is printed: data and the certificate go from one server to the other through a pipe.
+on:
+  workflow_dispatch:
+    inputs:
+      step:
+        description: Step
+        type: choice
+        options: [prepare, final]
+        default: prepare
+
+run-name: Migrate (${{ inputs.step }})
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      STEP: ${{ inputs.step }}
+      DOMAIN: ${{ vars.DOMAIN || 'avatar.tamirdesk.ir' }}
+      SSH_KEY: ${{ secrets.SSH_KEY }}
+      OLD_HOST: ${{ secrets.SSH_HOST }}
+      OLD_USER: ${{ secrets.SSH_USER }}
+      NEW_HOST: ${{ secrets.IR_SSH_HOST }}
+      NEW_USER: ${{ secrets.IR_SSH_USER }}
+      NEW_PORT: ${{ secrets.IR_SSH_PORT }}
+    steps:
+      - name: Migrate
+        run: |
+          set -euo pipefail
+          umask 077; mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" | tr -d '\r' > ~/.ssh/id_deploy
+          clean() { printf '%s' "$1" | tr -d '[:space:]'; }
+          oh=$(clean "$OLD_HOST"); ou=$(clean "$OLD_USER")
+          nh=$(clean "$NEW_HOST"); nu=$(clean "$NEW_USER"); np=$(clean "${NEW_PORT:-22}")
+          [ -n "$oh" ] && [ -n "$ou" ] && [ -n "$nh" ] && [ -n "$nu" ] || { echo "::error::SSH secrets are missing"; exit 1; }
+          opts=(-i ~/.ssh/id_deploy -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=30 -o ServerAliveInterval=30)
+          su_old=""; [ "$ou" = root ] || su_old="sudo -n"
+          su_new=""; [ "$nu" = root ] || su_new="sudo -n"
+          # old/new CMD: runs CMD as root on that server (stdin passes through, for streaming data).
+          old() { ssh "${opts[@]}" "$ou@$oh" "$su_old bash -c $(printf %q "$1")"; }
+          new() { ssh "${opts[@]}" -p "$np" "$nu@$nh" "$su_new bash -c $(printf %q "$1")"; }
+          log() { echo "==> $*"; }
+          fail() { echo "::error::$*"; exit 1; }
+          ip_of() { getent ahostsv4 "$1" | awk 'NR == 1 { print $1 }'; }
+          oip=$(ip_of "$oh"); nip=$(ip_of "$nh")
+          [ -n "$oip" ] && [ -n "$nip" ] || fail "Could not resolve the servers' addresses"
+          D=$DOMAIN
+          APP=/opt/avatar
+          # If the final step fails after stopping the old app, start it again so the site stays up.
+          restart_old=0
+          trap 'if [ "$restart_old" = 1 ]; then old "systemctl start avatar-web" || true; echo "::error::Migration failed; the old server serves the site again"; fi' EXIT
+
+          log "Checking both servers"
+          old "test -d $APP/shared/data" || fail "The old server has no site data"
+          [ "$(old "test -f $APP/shared/MOVED && echo moved || true")" = moved ] && fail "The old server was already migrated (final)"
+          [ "$(new "test -f $APP/shared/MIGRATED && echo done || true")" = done ] && fail "The new server already holds the live data (final ran); not overwriting it"
+
+          # ---------- HTTPS certificate ----------
+          if [ "$(new "test -f /etc/letsencrypt/live/$D/fullchain.pem && echo yes || true")" = yes ]; then
+            log "The new server already has a certificate for $D"
+          else
+            old "test -f /etc/letsencrypt/live/$D/fullchain.pem" || fail "The old server has no certificate for $D"
+            log "Copying the certificate for $D"
+            old "cd /etc/letsencrypt && tar czf - live/$D archive/$D renewal/$D.conf accounts" \
+              | new "mkdir -p /etc/letsencrypt && tar xzf - -C /etc/letsencrypt --no-same-owner && test -f /etc/letsencrypt/live/$D/privkey.pem"
+          fi
+          log "Certificate valid until: $(new "openssl x509 -enddate -noout -in /etc/letsencrypt/live/$D/fullchain.pem | cut -d= -f2")"
+
+          # ---------- final: make sure the new server answers before the old one stops ----------
+          if [ "$STEP" = final ]; then
+            tag="avatar-migrate-$RANDOM$RANDOM"
+            code=$(old "curl -s -m 30 -o /dev/null -w '%{http_code}' -A $tag --resolve $D:443:$nip https://$D/api/auth/me || true")
+            [ "$code" = 200 ] || fail "The old server cannot reach the site on the new server (HTTP $code). Deploy to iran first; nothing was changed."
+            # The old server's address as the new one sees it: its forwarded visitors keep their own IP.
+            relay_ip=$(new "grep -h '$tag' /var/log/nginx/access.log | tail -1 | cut -d' ' -f1")
+            [ -n "$relay_ip" ] || fail "Could not tell the old server's address; nothing was changed"
+            log "The old server reaches the new one (from $relay_ip)"
+            log "Stopping the app on the old server"
+            restart_old=1
+            old "systemctl stop avatar-web"
+          fi
+
+          # ---------- data ----------
+          log "Copying the data"
+          # A consistent copy of the database (works while the app runs) plus the saved characters.
+          old "set -e; rm -rf /tmp/avatar-migrate; mkdir -p /tmp/avatar-migrate; cd $APP/shared/data
+            node --disable-warning=ExperimentalWarning -e 'const { DatabaseSync } = require(\"node:sqlite\"); new DatabaseSync(\"app.db\").exec(\"VACUUM INTO \x27/tmp/avatar-migrate/app.db\x27\")'
+            node --disable-warning=ExperimentalWarning -e 'const db = new (require(\"node:sqlite\").DatabaseSync)(\"/tmp/avatar-migrate/app.db\"); const n = (t) => { try { return db.prepare(\"SELECT COUNT(*) AS n FROM \" + t).get().n } catch { return 0 } }; console.log(\"    users:\", n(\"users\"), \"| payments:\", n(\"payments\"), \"| saved characters:\", n(\"characters\"))'"
+          old "set -e; tar czf - -C /tmp/avatar-migrate app.db \$(cd $APP/shared/data && test -d characters && echo -C $APP/shared/data characters); rm -rf /tmp/avatar-migrate" \
+            | new "set -e; S=$APP/shared; rm -rf \$S/data.incoming; mkdir -p \$S/data.incoming
+                tar xzf - -C \$S/data.incoming --no-same-owner; test -s \$S/data.incoming/app.db
+                systemctl stop avatar-web 2>/dev/null || true
+                rm -rf \$S/data.before-migrate; [ -d \$S/data ] && mv \$S/data \$S/data.before-migrate
+                mv \$S/data.incoming \$S/data
+                id avatar >/dev/null 2>&1 && chown -R avatar:avatar \$S/data
+                du -sh \$S/data | sed 's/^/    size on the new server: /' >&2"
+
+          if [ "$STEP" = final ]; then
+            log "Trusting forwarded visitors' addresses from the old server"
+            new "set -e; E=$APP/shared/.env; touch \$E; grep -v '^TRUSTED_PROXIES=' \$E > \$E.new || true; echo TRUSTED_PROXIES=$relay_ip >> \$E.new; cat \$E.new > \$E; rm -f \$E.new"
+          fi
+          new "systemctl is-enabled avatar-web >/dev/null 2>&1 && systemctl restart avatar-web || true"
+
+          if [ "$STEP" != final ]; then
+            log "Done. The old server still serves the site; deploy to iran (if not done yet) and check it."
+            exit 0
+          fi
+
+          # ---------- final: the old server forwards visitors to the new one ----------
+          log "Making the old server forward visitors to the new one"
+          old "set -e
+            SITE=/etc/nginx/sites-available/avatar.conf; [ -f \$SITE ] || SITE=/etc/nginx/conf.d/avatar.conf
+            grep -q avatar-managed \$SITE || { echo 'no avatar site on the old server' >&2; exit 1; }
+            cp \"\$SITE\" /root/avatar-site.before-migrate
+            cat > \"\$SITE\" <<'EOF'
+          # avatar-managed: forwards every visitor to the new server (the site moved there), do not edit
+          server {
+              listen 80;
+              listen [::]:80;
+              server_name DOMAIN; # avatar-managed
+              location /.well-known/acme-challenge/ { root /var/www/avatar-acme; }
+              location / { return 301 https://\$host\$request_uri; }
+          }
+
+          server {
+              listen 443 ssl;
+              listen [::]:443 ssl;
+              server_name DOMAIN; # avatar-managed
+
+              ssl_certificate /etc/letsencrypt/live/DOMAIN/fullchain.pem;
+              ssl_certificate_key /etc/letsencrypt/live/DOMAIN/privkey.pem;
+              add_header Strict-Transport-Security \"max-age=31536000\" always;
+
+              client_max_body_size 5m;
+              client_body_timeout 120s;
+
+              location / {
+                  proxy_pass https://NEW_IP;
+                  proxy_http_version 1.1;
+                  proxy_ssl_server_name on;
+                  proxy_ssl_name DOMAIN;
+                  proxy_set_header Host \$host;
+                  proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+                  proxy_set_header Connection \"\";
+                  proxy_read_timeout 180s;
+                  proxy_send_timeout 180s;
+              }
+          }
+          EOF
+            sed -i -e \"s/DOMAIN/$D/g\" -e \"s/NEW_IP/$nip/g\" \"\$SITE\"
+            if ! nginx -t >/dev/null 2>&1; then
+              nginx -t 2>&1 | tail -3 >&2
+              cp /root/avatar-site.before-migrate \"\$SITE\"; systemctl start avatar-web
+              echo 'nginx rejected the forwarding site; the old site was restored and its app restarted' >&2; exit 1
+            fi
+            systemctl reload nginx
+            systemctl disable -q avatar-web avatar-tts; systemctl stop avatar-tts
+            echo \"moved to $nip on \$(date -u +%Y-%m-%d)\" > $APP/shared/MOVED"
+          restart_old=0
+          new "echo 'final migration from the old server on '\$(date -u +%Y-%m-%d) > $APP/shared/MIGRATED"
+
+          log "Checking the site through the old server"
+          sleep 2
+          code=$(curl -s -m 30 -o /dev/null -w '%{http_code}' --resolve "$D:443:$oip" "https://$D/api/auth/me" || true)
+          [ "$code" = 200 ] && log "Old server forwards to the new one: OK" || echo "::warning::Through the old server: HTTP $code"
+          code=$(curl -s -m 30 -o /dev/null -w '%{http_code}' --resolve "$D:443:$nip" "https://$D/api/auth/me" || true)
+          [ "$code" = 200 ] && log "New server directly: OK" || echo "::warning::New server directly: HTTP $code"
+          log "Done. Point the DNS record of $D to $nip."

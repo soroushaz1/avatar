@@ -101,9 +101,8 @@ async function piperSpeech(text, voice, speed) {
 }
 
 // Gemini speech: raw 16-bit mono PCM.
-async function geminiSpeech(text, voice) {
+async function geminiRequest(text, voice) {
   const { apiKey, apiBase, ttsModel } = config.gemini;
-  if (!apiKey) throw fail(400, 'unknown_voice');
   const res = await fetch(`${apiBase}/v1beta/models/${encodeURIComponent(ttsModel)}:generateContent`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
@@ -115,12 +114,18 @@ async function geminiSpeech(text, voice) {
   });
   const json = await res.json().catch(() => ({}));
   const audio = json.candidates?.[0]?.content?.parts?.find((p) => p.inlineData?.data)?.inlineData;
-  if (!res.ok || !audio) {
-    console.error('Gemini speech failed:', json.error?.message || json.candidates?.[0]?.finishReason || `HTTP ${res.status}`);
-    throw fail(502, 'tts_failed');
-  }
-  const rate = Number(/rate=(\d+)/.exec(audio.mimeType || '')?.[1]) || 24000;
-  return { pcm: Buffer.from(audio.data, 'base64'), rate };
+  if (res.ok && audio) return { pcm: Buffer.from(audio.data, 'base64'), rate: Number(/rate=(\d+)/.exec(audio.mimeType || '')?.[1]) || 24000 };
+  console.error('Gemini speech failed:', json.error?.message || json.candidates?.[0]?.finishReason || `HTTP ${res.status}`);
+  return null;
+}
+
+async function geminiSpeech(text, voice) {
+  if (!config.gemini.apiKey) throw fail(400, 'unknown_voice');
+  // A very short text (a single word) is sometimes taken as a question to answer rather than text to
+  // read ("Model tried to generate text"); saying what to do fixes that.
+  const spoken = (await geminiRequest(text, voice)) || (await geminiRequest(`Say: ${text}`, voice));
+  if (!spoken) throw fail(502, 'tts_failed');
+  return spoken;
 }
 
 // Speech plus the timing of every phoneme ([phoneme, start s, duration s]) for lip-sync.
@@ -138,9 +143,15 @@ async function synthesize(text, voice, speed) {
   const lang = languageOf(text);
   const reference = (await listVoices().catch(() => [])).find((v) => v.lang === lang);
   const [spoken, ref] = await Promise.all([
-    geminiSpeech(text, name),
+    geminiSpeech(text, name).catch((err) => err),
     reference ? piperSpeech(text, reference.id, 1).catch(() => null) : null,
   ]);
+  if (spoken instanceof Error) {
+    // Gemini is unavailable: read the text with the server's own voice rather than not at all.
+    if (!reference) throw spoken;
+    console.error('Gemini speech unavailable; using', reference.id);
+    return { ...(await synthesize(text, reference.id, speed)), substitute: true };
+  }
   const raw = ['-f', 's16le', '-ar', String(spoken.rate), '-ac', '1'];
   let pcm = spoken.pcm;
   if (Math.abs(speed - 1) > 0.01) {
@@ -209,7 +220,11 @@ ttsRouter.post('/demo', rateLimit({ windowMs: 10 * 60 * 1000, max: 20 }), async 
     }
     if (!voice) throw new Error('no voices');
     const key = `${lang}:${voice.id}`;
-    if (!demoCache.has(key)) demoCache.set(key, await synthesize(DEMO_TEXTS[lang], voice.id, 1));
+    if (!demoCache.has(key)) {
+      const speech = await synthesize(DEMO_TEXTS[lang], voice.id, 1);
+      if (speech.substitute) return res.json(speech); // not cached: Gemini may answer next time
+      demoCache.set(key, speech);
+    }
     res.json(demoCache.get(key));
   } catch (err) {
     if (err.key) return res.status(err.status).json({ error: msg(req, err.key) });

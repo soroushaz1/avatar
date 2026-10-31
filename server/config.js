@@ -28,6 +28,9 @@ export const config = {
   dataDir: path.resolve(ROOT, env.DATA_DIR || 'data'),
   cookieSecure: bool(env.COOKIE_SECURE, (env.BASE_URL || '').startsWith('https://')),
   trustProxy: bool(env.TRUST_PROXY, true),
+  // Other servers that forward visitors here (e.g. the old server while DNS moves), comma-separated IPs:
+  // their X-Forwarded-For is trusted, so visitors keep their own IP for limits.
+  trustedProxies: (env.TRUSTED_PROXIES || '').split(',').map((s) => s.trim()).filter(Boolean),
 
   zarinpal: {
     merchantId: env.ZARINPAL_MERCHANT_ID || '',

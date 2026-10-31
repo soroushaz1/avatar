@@ -12,7 +12,7 @@ import { langMiddleware, msg } from './i18n.js';
 
 const app = express();
 app.disable('x-powered-by');
-if (config.trustProxy) app.set('trust proxy', 'loopback');
+if (config.trustProxy) app.set('trust proxy', ['loopback', ...config.trustedProxies]);
 
 app.use((_req, res, next) => {
   res.set({

@@ -36,13 +36,45 @@ apt_install() {
   apt-get install -y -qq "${missing[@]}" >/dev/null
 }
 
+# The site has moved to another server (see the Migrate workflow): deploying here again would bring
+# back an old copy of the data.
+[ -f "$APP/shared/MOVED" ] && fail "This server no longer runs the site: $(cat "$APP/shared/MOVED"). Deploy to the new server."
+
 # ---------- system prerequisites ----------
-NODE=$(command -v node || true)
-[ -n "$NODE" ] || fail "Node.js is not installed"
-node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22||(a===22&&b>=13)?0:1)' \
-  || fail "Node.js >= 22.13 is required (found $(node --version))"
-apt_install python3-venv curl ffmpeg
+apt_install python3-venv curl ffmpeg xz-utils
+node_ok() {
+  command -v node >/dev/null 2>&1 &&
+    node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22||(a===22&&b>=13)?0:1)' 2>/dev/null
+}
+if ! node_ok; then
+  # The official build of the newest Node.js 22, checked against its published checksum.
+  case "$(uname -m)" in
+    x86_64) arch=x64 ;;
+    aarch64) arch=arm64 ;;
+    *) fail "No Node.js build for this CPU ($(uname -m))" ;;
+  esac
+  base=https://nodejs.org/dist/latest-v22.x
+  sums=$(curl -fsSL --retry 3 -m 60 "$base/SHASUMS256.txt") || fail "Could not reach nodejs.org to install Node.js"
+  line=$(grep -E "  node-v22\.[0-9]+\.[0-9]+-linux-$arch\.tar\.xz$" <<<"$sums" | head -1)
+  [ -n "$line" ] || fail "No Node.js 22 build listed for linux-$arch"
+  file=${line##* }
+  log "Installing Node.js ${file%-linux-*}"
+  tmp=$(mktemp -d)
+  curl -fsSL --retry 3 -m 600 -o "$tmp/$file" "$base/$file" || fail "Node.js download failed"
+  (cd "$tmp" && sha256sum -c --status <<<"$line") || fail "Node.js download does not match its checksum"
+  tar xJf "$tmp/$file" -C /usr/local --strip-components=1 --no-same-owner \
+    --exclude="${file%.tar.xz}/CHANGELOG.md" --exclude="${file%.tar.xz}/README.md" --exclude="${file%.tar.xz}/LICENSE"
+  rm -rf "$tmp"
+  hash -r
+  node_ok || fail "Node.js >= 22.13 is required (found $(node --version 2>&1))"
+fi
+NODE=$(command -v node)
+command -v nginx >/dev/null || apt_install nginx
 command -v certbot >/dev/null || apt_install certbot
+# A firewall that is on must let visitors reach the site.
+if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q '^Status: active'; then
+  ufw allow 80/tcp >/dev/null && ufw allow 443/tcp >/dev/null
+fi
 
 # A little swap keeps the voice model from starving other services on small (≤1 GB) servers.
 if ! swapon --show | grep -q . && [ "$(awk '/MemTotal/ {print $2}' /proc/meminfo)" -lt 1500000 ]; then
@@ -283,28 +315,38 @@ apply_site() {
 
 mkdir -p "$ACME_ROOT"
 CERT=/etc/letsencrypt/live/$DOMAIN/fullchain.pem
+TLS=1
 if [ ! -f "$CERT" ]; then
   log "Configuring nginx for $DOMAIN (HTTP) to request a certificate"
   write_site 0
   apply_site || fail "nginx rejected the HTTP site configuration (rolled back)"
-  log "DNS for $DOMAIN resolves to: $(getent ahostsv4 "$DOMAIN" | awk '{print $1}' | sort -u | tr '\n' ' ')"
+  dns=$(getent ahostsv4 "$DOMAIN" | awk '{print $1}' | sort -u | tr '\n' ' ')
+  log "DNS for $DOMAIN resolves to: $dns"
   log "Requesting a Let's Encrypt certificate"
   if ! certbot certonly --webroot -w "$ACME_ROOT" -d "$DOMAIN" --non-interactive --agree-tos \
       --register-unsafely-without-email --deploy-hook "systemctl reload nginx" >/tmp/avatar-certbot.log 2>&1; then
     tail -5 /tmp/avatar-certbot.log | sed 's/^/    /'
-    fail "Could not get a certificate. Check that $DOMAIN points to this server, then deploy again. The site is reachable over plain http meanwhile (camera needs https)."
+    # Before the domain is moved here (DNS still points elsewhere) that is expected: keep plain http.
+    mine=$(hostname -I 2>/dev/null || true)
+    for ip in $dns; do grep -qw "$ip" <<<"$mine" && fail "Could not get a certificate although $DOMAIN points to this server."; done
+    warn "No certificate yet: $DOMAIN does not point to this server. Plain http only until it does; deploy again then."
+    TLS=0
   fi
 fi
-log "Configuring nginx for https://$DOMAIN"
-write_site 1
-apply_site || fail "nginx rejected the HTTPS site configuration (rolled back)"
+if [ "$TLS" = 1 ]; then
+  log "Configuring nginx for https://$DOMAIN"
+  write_site 1
+  apply_site || fail "nginx rejected the HTTPS site configuration (rolled back)"
+fi
 
 # ---------- health checks ----------
 sleep 2
 code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$APP_PORT/api/auth/me" || true)
 [ "$code" = 200 ] && log "Web app: OK" || fail "Web app is not responding (HTTP $code); see: journalctl -u avatar-web"
-code=$(curl -s -o /dev/null -w '%{http_code}' --resolve "$DOMAIN:443:127.0.0.1" "https://$DOMAIN/" || true)
-[ "$code" = 200 ] && log "HTTPS via nginx: OK" || warn "HTTPS check returned HTTP $code"
+if [ "$TLS" = 1 ]; then
+  code=$(curl -s -o /dev/null -w '%{http_code}' --resolve "$DOMAIN:443:127.0.0.1" "https://$DOMAIN/" || true)
+  [ "$code" = 200 ] && log "HTTPS via nginx: OK" || warn "HTTPS check returned HTTP $code"
+fi
 for _ in $(seq 1 20); do
   curl -s -o /dev/null "http://127.0.0.1:$TTS_PORT/health" && break
   sleep 1
@@ -319,4 +361,4 @@ case "$zp" in
   *) log "ZarinPal API reachable (HTTP $zp)" ;;
 esac
 [ -n "${GEMINI_API_KEY:-}" ] && log "Gemini key: configured" || warn "GEMINI_API_KEY is empty; 3D characters are disabled"
-log "Done: https://$DOMAIN"
+[ "$TLS" = 1 ] && log "Done: https://$DOMAIN" || log "Done: http://$DOMAIN (https once the domain points here)"

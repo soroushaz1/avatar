@@ -83,9 +83,14 @@ jobs:
             # The speech model the site uses for its female voices.
             code=$(curl -s -m 60 -o /tmp/gemini.json -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
               -H "x-goog-api-key: $GEMINI_API_KEY" \
-              -d '{"contents":[{"parts":[{"text":"سلام"}]}],"generationConfig":{"responseModalities":["AUDIO"],"speechConfig":{"voiceConfig":{"prebuiltVoiceConfig":{"voiceName":"Leda"}}}}}' \
+              -d '{"contents":[{"parts":[{"text":"سلام! من آواتار شما هستم."}]}],"generationConfig":{"responseModalities":["AUDIO"],"speechConfig":{"voiceConfig":{"prebuiltVoiceConfig":{"voiceName":"Leda"}}}}}' \
               "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent" 2>/dev/null || echo 'no connection')
             echo "Generate speech: HTTP $code: $(python3 -c 'import json; j = json.load(open("/tmp/gemini.json")); e = j.get("error", {}).get("message"); print(e or "audio, %d bytes" % (len(j["candidates"][0]["content"]["parts"][0]["inlineData"]["data"]) * 3 // 4))' 2>/dev/null | head -c 200)"
+            # The image model that makes the characters.
+            code=$(curl -s -m 120 -o /tmp/gemini.json -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+              -H "x-goog-api-key: $GEMINI_API_KEY" -d '{"contents":[{"parts":[{"text":"A small cartoon smiling sun on a white background."}]}]}' \
+              "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent" 2>/dev/null || echo 'no connection')
+            echo "Generate image: HTTP $code: $(python3 -c 'import json; j = json.load(open("/tmp/gemini.json")); e = j.get("error", {}).get("message"); d = [p["inlineData"]["data"] for p in j.get("candidates", [{}])[0].get("content", {}).get("parts", []) if "inlineData" in p]; print(e or ("image, %d bytes" % (len(d[0]) * 3 // 4) if d else "no image"))' 2>/dev/null | head -c 200)"
             rm -f /tmp/gemini.json
           fi
           EOF

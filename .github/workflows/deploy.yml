@@ -1,16 +1,25 @@
 name: Deploy
 
 # Ships the app to the server over SSH and runs deploy/install.sh there.
-# Secrets: SSH_HOST, SSH_USER, SSH_KEY, ZARINPAL_MERCHANT_ID, GEMINI_API_KEY.
+# Secrets: SSH_KEY, ZARINPAL_MERCHANT_ID, GEMINI_API_KEY, and the server: IR_SSH_HOST, IR_SSH_USER, IR_SSH_PORT
+# (Iranian server) or SSH_HOST, SSH_USER (the earlier server abroad).
 # Optional repository variables: DOMAIN, ZARINPAL_SANDBOX, GEMINI_IMAGE_MODEL, PLAN_WEEKLY_TOMAN, PLAN_MONTHLY_TOMAN,
 # PLAN_QUARTERLY_TOMAN, AVATAR_DAILY_LIMIT, AVATAR_FREE_LIMIT, AVATAR_SUBSCRIBER_LIMIT.
 # Manual for now (Actions > Deploy > Run workflow); can be switched to run on every push to main later.
 on:
   workflow_dispatch:
+    inputs:
+      target:
+        description: Server
+        type: choice
+        options: [iran, abroad]
+        default: iran
 
 concurrency:
   group: deploy
   cancel-in-progress: false
+
+run-name: Deploy to ${{ inputs.target || 'iran' }}
 
 jobs:
   deploy:
@@ -57,15 +66,33 @@ jobs:
 
       - name: Upload and install
         env:
-          SSH_HOST: ${{ secrets.SSH_HOST }}
-          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_HOST: ${{ inputs.target == 'abroad' && secrets.SSH_HOST || secrets.IR_SSH_HOST }}
+          SSH_USER: ${{ inputs.target == 'abroad' && secrets.SSH_USER || secrets.IR_SSH_USER }}
+          SSH_PORT: ${{ inputs.target != 'abroad' && secrets.IR_SSH_PORT || '' }}
         run: |
           host=$(echo "$SSH_HOST" | tr -d '[:space:]')
           user=$(echo "$SSH_USER" | tr -d '[:space:]')
-          opts=(-i ~/.ssh/id_deploy -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=30)
+          port=$(echo "${SSH_PORT:-22}" | tr -d '[:space:]')
+          [ -n "$host" ] && [ -n "$user" ] || { echo "::error::The server's SSH secrets are missing"; exit 1; }
+          echo "Deploying to the ${{ inputs.target }} server"
+          opts=(-i ~/.ssh/id_deploy -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=30 -o ServerAliveInterval=30 -o Port="$port")
           scp -q "${opts[@]}" "$RUNNER_TEMP/release.tgz" "$user@$host:/tmp/avatar-release.tgz"
           scp -q -p "${opts[@]}" "$RUNNER_TEMP/deploy.env" "$user@$host:/tmp/avatar-deploy.env"
           sudo_cmd=""; [ "$user" = root ] || sudo_cmd="sudo -n"
           ssh "${opts[@]}" "$user@$host" \
             "chmod 600 /tmp/avatar-deploy.env; $sudo_cmd env RELEASE=/tmp/avatar-release.tgz ENV_FILE=/tmp/avatar-deploy.env bash -s; status=\$?; rm -f /tmp/avatar-deploy.env /tmp/avatar-release.tgz; exit \$status" \
             < deploy/install.sh
+
+      - name: Check from outside
+        env:
+          SSH_HOST: ${{ inputs.target == 'abroad' && secrets.SSH_HOST || secrets.IR_SSH_HOST }}
+          DOMAIN: ${{ vars.DOMAIN || 'avatar.tamirdesk.ir' }}
+        run: |
+          # The site on this server as visitors will see it (also before DNS points here).
+          ip=$(getent ahostsv4 "$(echo "$SSH_HOST" | tr -d '[:space:]')" | awk 'NR == 1 { print $1 }')
+          get() { curl -s -m 60 -o /tmp/out -w '%{http_code} in %{time_total}s' --resolve "$DOMAIN:443:$ip" "$@" || echo "no connection"; }
+          echo "Page: $(get "https://$DOMAIN/")"
+          echo "Voices: $(get "https://$DOMAIN/api/tts/voices") ($(grep -o '"id"' /tmp/out | wc -l) voices)"
+          # A female (Gemini) voice: shows whether Google answers this server.
+          echo "Gemini voice: $(get -X POST -H 'Content-Type: application/json' -d '{"lang":"fa","voice":"gemini-Leda"}' "https://$DOMAIN/api/tts/demo")" \
+            "$(node -e 'const j = JSON.parse(require("fs").readFileSync("/tmp/out")); console.log(j.error || (j.substitute ? "Gemini failed, server voice used" : `OK, ${j.phonemes.length} phonemes`))' 2>/dev/null)"

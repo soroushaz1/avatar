@@ -69,12 +69,17 @@ Give a registered account a subscription by hand: `npm run grant -- user@example
 ## Deployment
 
 Running the **Deploy** workflow (GitHub → Actions → Deploy → Run workflow) copies the code to the server and
-runs `deploy/install.sh`. The script installs everything under `/opt/avatar`, runs the
-app and the voice service with systemd (`avatar-web`, `avatar-tts`), adds an nginx site for the domain only
-(existing sites are left untouched; changes are checked with `nginx -t` and rolled back on error) and gets a
-Let's Encrypt certificate.
+runs `deploy/install.sh`. The script installs what is missing (Node.js 22, nginx, certbot, ffmpeg, Piper), puts
+everything under `/opt/avatar`, runs the app and the voice service with systemd (`avatar-web`, `avatar-tts`),
+adds an nginx site for the domain only (existing sites are left untouched; changes are checked with `nginx -t`
+and rolled back on error) and gets a Let's Encrypt certificate (plain http until the domain points to the server).
 
-Repository secrets: `SSH_HOST`, `SSH_USER`, `SSH_KEY`, `ZARINPAL_MERCHANT_ID`, `GEMINI_API_KEY`.
+The site runs on the Iranian server (target `iran`, the default); `abroad` is the earlier server. The **Migrate**
+workflow moved it: `prepare` copies the certificate and a snapshot of the data, `final` stops the old app, copies
+the data a last time and makes the old server forward visitors to the new one while DNS changes over.
+
+Repository secrets: `IR_SSH_HOST`, `IR_SSH_USER`, `IR_SSH_PORT` (Iranian server), `SSH_HOST`, `SSH_USER` (the
+earlier server), `SSH_KEY`, `ZARINPAL_MERCHANT_ID`, `GEMINI_API_KEY`.
 Optional repository variables: `DOMAIN` (default `avatar.tamirdesk.ir`), `ZARINPAL_SANDBOX`,
 `GEMINI_IMAGE_MODEL`, `PLAN_WEEKLY_TOMAN`, `PLAN_MONTHLY_TOMAN`, `PLAN_QUARTERLY_TOMAN`, `AVATAR_DAILY_LIMIT`,
 `AVATAR_FREE_LIMIT`, `AVATAR_SUBSCRIBER_LIMIT`. Optional secret: `AVATAR_UNLIMITED_LOGINS` (comma-separated
