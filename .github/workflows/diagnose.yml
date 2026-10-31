@@ -22,7 +22,10 @@ jobs:
             "$(echo "$SSH_USER" | tr -d '[:space:]')@$(echo "$SSH_HOST" | tr -d '[:space:]')" 'bash -s' <<'EOF'
           echo "== services"; systemctl is-active avatar-web avatar-tts
           echo "== memory"; free -m | sed -n 1,3p
-          echo "== app log (last 30 lines)"; journalctl -u avatar-web -n 30 --no-pager -o cat
+          echo "== app log (last 30 lines)"; journalctl -u avatar-web -n 30 --no-pager -o short-iso
+          echo "== recent API requests (time, method, path, status, bytes)"
+          grep -h '/api/' /var/log/nginx/access.log 2>/dev/null | grep -v '/api/tts/demo' | tail -n 40 \
+            | awk '{ split($0, q, "\""); split(q[2], r, " "); print $4, r[1], r[2], $9, $10 }'
           echo "== tts log (last 10 lines)"; journalctl -u avatar-tts -n 10 --no-pager -o cat
           echo "== large asset requests (status, bytes sent; expected: wasm ~4MB gzipped / 14.5MB, model 3758596)"
           for f in /var/log/nginx/access.log /var/log/nginx/access.log.1; do
