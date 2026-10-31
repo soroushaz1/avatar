@@ -101,9 +101,10 @@ async function asJpegDataUrl(image) {
 
 // The character with the mouth in each viseme: [{ id, image }]. Shapes Gemini refuses or fails on are
 // skipped (the browser uses the closest shape it has instead).
-async function visemeImages(image) {
+async function visemeImages(image, realistic = false) {
   const ids = Object.keys(VISEMES);
-  const results = await Promise.allSettled(ids.map((id) => callGemini(`${KEEP} ${VISEMES[id]}`, image.mimeType, image.data)));
+  const keep = realistic ? `${KEEP} ${REAL_PHOTO}` : KEEP;
+  const results = await Promise.allSettled(ids.map((id) => callGemini(`${keep} ${VISEMES[id]}`, image.mimeType, image.data)));
   const out = [];
   for (const [i, r] of results.entries()) {
     if (r.status === 'fulfilled') out.push({ id: ids[i], image: await asJpegDataUrl(r.value) });
@@ -187,11 +188,17 @@ avatarRouter.post('/generate', express.json({ limit: '4mb' }), uploadedBody, asy
   });
 });
 
-// Mouth shapes for a character made before they existed (one quota unit).
+// For the user's own photo (the realistic avatar).
+const REAL_PHOTO = `This is a real photo of a real person: the result must look like the same real, unedited \
+camera photo, with the same skin, teeth and lighting, not a drawing or a 3D render.`;
+
+// Mouth shapes for a character made before they existed, or (realistic) for the user's own photo, so the
+// realistic avatar can talk without recording the mouth with the camera (one quota unit).
 avatarRouter.post('/mouths', express.json({ limit: '4mb' }), uploadedBody, async (req, res) => {
   const character = parseImage(req.body?.image);
   if (!character) return res.status(400).json({ error: msg(req, 'bad_photo') });
-  await withQuota(req, res, 'mouths', async () => ({ visemes: await visemeImages(character) }));
+  const realistic = !!req.body.realistic;
+  await withQuota(req, res, 'mouths', async () => ({ visemes: await visemeImages(character, realistic) }));
 });
 
 // A photo with part of the head cut off, or a tilted head, made complete and straight for the realistic avatar

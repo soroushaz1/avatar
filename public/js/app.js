@@ -3,7 +3,7 @@ import { FaceTracker, detectImage, loadFaceAssets } from './tracker.js';
 import { createParams, paramsFromResult, smoothParams, IdleAnimator } from './face-params.js';
 import { FaceAvatar } from './face-avatar.js';
 import { Speaker, unlockAudio, detectLang, createRecordingDestination } from './speech.js';
-import { MouthSamples, saveSampleSet, loadSampleSet } from './mouth-samples.js';
+import { MouthSamples, SAMPLES_NEEDED, saveSampleSet, loadSampleSet, cropAroundMouth } from './mouth-samples.js';
 import { VISEME_IDS, visemeOfBlendshapes } from './visemes.js';
 import { VideoRecorder, VIDEO_FPS, buildCaptions, canRecordVideo } from './recorder.js';
 import { t, lang, setLanguage, applyLanguage, formatNumber, formatDate, formatDuration } from './i18n.js';
@@ -63,6 +63,10 @@ const state = {
   authTab: 'login',
   // While a video is being recorded: { recorder, cancelled }.
   recording: null,
+  // The realistic avatar's mouth shapes: recorded with the camera (only when the user asks for it), or
+  // made by AI from the photo ('making' / 'failed' while that is under way or went wrong).
+  recordMouths: false,
+  realMouths: null,
   // The characters kept in the user's account ([{ id, style, thumb, image, visemes, ... }]).
   saved: [],
   savedLoaded: false,
@@ -262,7 +266,7 @@ let liveCameraShown = false;
 function cameraNeeded() {
   if (usesCharacter() || usesSaved()) return false;
   if (!state.real) return true;
-  return state.mode === 'realistic' && (!mouths.ready || (tracker.cameraOn && !!nextCoachTarget()));
+  return state.mode === 'realistic' && state.recordMouths && (!mouths.ready || (tracker.cameraOn && !!nextCoachTarget()));
 }
 
 let cameraWasNeeded = null;
@@ -303,6 +307,7 @@ function renderStage() {
   });
   $('style-card').hidden = state.mode !== 'fantasy';
   $('btn-reset-face').hidden = !state.real;
+  $('btn-record-mouth').hidden = !state.real || state.mode !== 'realistic' || state.recordMouths;
   $('btn-capture').textContent = t(state.real ? 'capture_again' : 'capture_from_camera');
   $('btn-regenerate').hidden = charMode || usesSaved() || !state.generated[state.look] || !!state.generating;
 
@@ -315,7 +320,7 @@ function renderStage() {
 const COACH_ORDER = ['AW', 'AA', 'E', 'I', 'O', 'U', 'FF', 'SS'];
 const coach = { target: null, since: 0, held: 0, skipped: new Set() };
 const nextCoachTarget = () => COACH_ORDER.find((id) => !mouths.set[id] && !coach.skipped.has(id)) || null;
-const coachActive = () => state.mode === 'realistic' && !!state.real && tracker.cameraOn && tracker.ready
+const coachActive = () => state.mode === 'realistic' && state.recordMouths && !!state.real && tracker.cameraOn && tracker.ready
   && !speaker.speaking && !state.recording && !!nextCoachTarget();
 
 let mouthsWereReady = false;
@@ -332,7 +337,9 @@ function renderCoach() {
       return dot;
     }));
   }
-  if (mouths.ready && !mouthsWereReady && state.mode === 'realistic') toast(t('samples_ready'), 'ok', 6000);
+  if (state.recordMouths && mouths.ready && !mouthsWereReady && state.mode === 'realistic') toast(t('samples_ready'), 'ok', 6000);
+  // Recording ends once every shape is recorded (or skipped); then the camera turns off.
+  if (state.recordMouths && mouths.ready && !nextCoachTarget()) state.recordMouths = false;
   mouthsWereReady = mouths.ready;
 }
 
@@ -345,6 +352,8 @@ function onMouthSamplesChanged() {
 }
 
 function collectMouthSamples(landmarks, shapes, p, now, dt) {
+  // Only while the user records their mouth shapes (otherwise they are made from the photo).
+  if (!state.recordMouths) return;
   const id = visemeOfBlendshapes(shapes);
   let changed = false;
   if (coachActive()) {
@@ -404,6 +413,26 @@ function renderOverlay(capturing) {
           { label: t('keep_photo'), onClick: () => setIncomplete(false) },
         ],
       });
+    }
+    // The realistic avatar talks with images of the user's mouth; by default AI makes them from the photo.
+    if (!mouths.ready && !state.recordMouths && state.realMouths !== 'making' && !state.cameraError) {
+      if (state.consent && state.generationAvailable && state.realMouths !== 'failed') {
+        makeRealMouths();
+      } else {
+        const ai = { label: t('real_mouths_ai'), primary: true, onClick: () => {
+          state.consent = true;
+          store.set('avatar.consent', true);
+          state.realMouths = null;
+          makeRealMouths();
+          renderStage();
+        } };
+        const camera = { label: t('record_mouth'), primary: !state.generationAvailable, onClick: () => recordMouths() };
+        return showOverlay({
+          title: t('real_mouths_title'),
+          text: t(state.realMouths === 'failed' ? 'real_mouths_failed' : 'real_mouths_text'),
+          actions: state.generationAvailable ? [ai, camera] : [camera],
+        });
+      }
     }
   }
   if (capturing || state.mode !== 'fantasy' || usesCharacter() || state.generated[state.look]) return hideOverlay();
@@ -703,6 +732,8 @@ function forgetFace() {
   capture.last = null;
   mouths.clear();
   coach.skipped.clear();
+  state.recordMouths = false;
+  state.realMouths = null;
 }
 
 async function useNewPhoto(canvas, mirrored) {
@@ -737,6 +768,53 @@ function setIncomplete(incomplete) {
   else store.remove(INCOMPLETE_KEY);
   renderStage();
 }
+
+// Mouth images for the realistic avatar, made by AI from the user's photo (no camera needed). Only the
+// mouth area of each is kept.
+async function makeRealMouths() {
+  if (!state.real || state.realMouths === 'making') return;
+  state.realMouths = 'making';
+  setStatus(t('real_mouths_making'));
+  const photo = state.real;
+  try {
+    const { visemes } = await api.avatarMouths(portraitCrop(photo), true);
+    const set = {};
+    for (const { id, image } of visemes || []) {
+      if (!VISEME_IDS.includes(id)) continue;
+      const canvas = imageToCanvas(await loadImage(image));
+      const landmarks = (await detectImage(canvas)).faceLandmarks?.[0];
+      if (landmarks) set[id] = cropAroundMouth(canvas, canvas.width, canvas.height, landmarks);
+    }
+    if (photo !== state.real) return; // a new photo meanwhile
+    if (Object.keys(set).length < SAMPLES_NEEDED) throw new Error(t('real_mouths_failed'));
+    mouths.adopt(set);
+    mouthsWereReady = true;
+    state.realMouths = null;
+    toast(t('real_mouths_ready'), 'ok', 6000);
+  } catch (err) {
+    console.warn('Mouth images for the realistic avatar failed', err);
+    if (photo === state.real) state.realMouths = 'failed';
+    if (err.data?.upgrade) subscribe();
+  } finally {
+    // A new photo meanwhile has its own mouth shapes made.
+    if (photo === state.real) {
+      if (state.realMouths === 'making') state.realMouths = null;
+      setStatus('');
+      renderStage();
+    }
+  }
+}
+
+// The user records their own mouth shapes with the camera instead.
+function recordMouths() {
+  state.recordMouths = true;
+  state.realMouths = null;
+  mouths.clear();
+  coach.skipped.clear();
+  setMode('realistic');
+}
+
+$('btn-record-mouth').addEventListener('click', recordMouths);
 
 // Has Gemini complete and straighten the user's photo for the realistic avatar.
 async function completePhoto() {
@@ -1193,8 +1271,9 @@ function avatarCanTalk() {
   }
   if (state.mode === 'realistic' && !mouths.ready && !state.cameraError) {
     // Without a camera at all, the realistic avatar falls back to a drawn mouth.
-    renderCoach();
-    toast(t(tracker.cameraOn ? 'need_samples' : 'need_samples_camera'), '', 7000);
+    if (state.realMouths === 'making') toast(t('real_mouths_wait'), '', 6000);
+    else if (state.recordMouths) toast(t(tracker.cameraOn ? 'need_samples' : 'need_samples_camera'), '', 7000);
+    renderStage();
     return false;
   }
   return true;

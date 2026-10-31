@@ -63,7 +63,27 @@ export async function loadSampleSet(key) {
   return set;
 }
 
-// Real frames of the user's mouth, one per viseme, collected from the webcam.
+/**
+ * A square around the mouth (nose to below the chin) of an image or video frame, at up to CROP_SIZE px:
+ * only the lips and the inside of the mouth are used, so this keeps them sharp and the stored image small.
+ * @param landmarks normalized to the W x H source
+ */
+export function cropAroundMouth(source, W, H, landmarks) {
+  const ys = landmarks.map((q) => q.y * H);
+  const faceH = Math.max(...ys) - Math.min(...ys);
+  const mx = ((landmarks[13].x + landmarks[14].x) / 2) * W, my = ((landmarks[13].y + landmarks[14].y) / 2) * H;
+  const size = Math.min(W, H, faceH * 0.9);
+  const x0 = Math.min(W - size, Math.max(0, mx - size / 2)), y0 = Math.min(H - size, Math.max(0, my - size / 2));
+  const scale = Math.min(1, CROP_SIZE / size);
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = Math.round(size * scale);
+  canvas.getContext('2d', { willReadFrequently: true }).drawImage(source, x0, y0, size, size, 0, 0, canvas.width, canvas.height);
+  const local = landmarks.slice(0, 468).map((q) => ({ x: (q.x * W - x0) / size, y: (q.y * H - y0) / size, z: (q.z * W) / size }));
+  return { canvas, landmarks: local };
+}
+
+// Images of the user's mouth, one per viseme: frames collected from the webcam, or images made by AI
+// from the user's photo (adopt).
 export class MouthSamples {
   constructor() {
     this.set = {};
@@ -106,21 +126,17 @@ export class MouthSamples {
     if (current && current.quality >= quality - 0.03) return false;
     this.lastGrab = now;
 
-    // Only the lips are used, so a square around the mouth (nose to below the chin) at full camera
-    // resolution keeps them sharp.
-    const ys = landmarks.map((q) => q.y * H);
-    const faceH = Math.max(...ys) - Math.min(...ys);
-    const mx = ((landmarks[13].x + landmarks[14].x) / 2) * W, my = ((landmarks[13].y + landmarks[14].y) / 2) * H;
-    const size = Math.min(W, H, faceH * 0.9);
-    const x0 = Math.min(W - size, Math.max(0, mx - size / 2)), y0 = Math.min(H - size, Math.max(0, my - size / 2));
-    const scale = Math.min(1, CROP_SIZE / size);
-    const canvas = document.createElement('canvas');
-    canvas.width = canvas.height = Math.round(size * scale);
-    canvas.getContext('2d', { willReadFrequently: true }).drawImage(video, x0, y0, size, size, 0, 0, canvas.width, canvas.height);
-    const local = landmarks.slice(0, 468).map((q) => ({ x: (q.x * W - x0) / size, y: (q.y * H - y0) / size, z: (q.z * W) / size }));
-    this.set[id] = { canvas, landmarks: local, quality };
+    this.set[id] = { ...cropAroundMouth(video, W, H, landmarks), quality };
     this.version++;
     return true;
+  }
+
+  // Mouth images made by AI, in place of camera frames (camera frames never replace them: quality 1).
+  adopt(set) {
+    this.set = {};
+    for (const [id, s] of Object.entries(set)) this.set[id] = { ...s, quality: 1 };
+    this.version++;
+    this.save();
   }
 
   save() {

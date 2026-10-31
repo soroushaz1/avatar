@@ -65,7 +65,8 @@ export const api = {
   characters: () => request('GET', '/api/characters'),
   saveCharacter: (character) => uploading('/api/characters', character, 120000),
   deleteCharacter: (id) => request('DELETE', `/api/characters/${id}`, {}),
-  avatarMouths: (image) => uploading('/api/avatar/mouths', { image }, 200000),
+  // realistic: for the user's own photo (mouth images stay photorealistic).
+  avatarMouths: (image, realistic = false) => uploading('/api/avatar/mouths', { image, realistic }, 200000),
   completePhoto: (image) => uploading('/api/avatar/complete', { image }, 180000),
   // Speech as { audio (base64), mime, phonemes: [[phoneme, start, duration]] }.
   tts: (text, voice, speed) => request('POST', '/api/tts', { text, voice, speed }),
