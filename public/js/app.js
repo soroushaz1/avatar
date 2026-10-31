@@ -1052,6 +1052,15 @@ function renderPlans() {
     per.textContent = months > 1
       ? t('per_month', { price: formatNumber(Math.round(plan.priceToman / months)) })
       : t('days_access', { days: formatNumber(plan.days) });
+    // What a longer plan saves compared with paying month by month.
+    const monthly = state.plans.find((p) => Math.round(p.days / 30) === 1);
+    const saving = monthly && months > 1 ? Math.round((1 - plan.priceToman / months / monthly.priceToman) * 100) : 0;
+    if (saving > 0) {
+      const badge = document.createElement('span');
+      badge.className = 'plan-save';
+      badge.textContent = t('plan_save', { pct: formatNumber(saving) });
+      per.append(' ', badge);
+    }
     const btn = document.createElement('button');
     btn.className = 'btn primary block';
     btn.textContent = t('pay');

@@ -366,6 +366,7 @@ a.btn { display: inline-flex; align-items: center; justify-content: center; text
 .plan .price { font-size: 1.5rem; font-weight: 800; }
 .plan .price small { font-size: 0.85rem; font-weight: 500; color: var(--muted); }
 .plan .per-month { color: var(--muted); font-size: 0.85rem; min-height: 1.4em; }
+.plan-save { display: inline-block; padding: 0 8px; border-radius: 99px; font-weight: 700; color: var(--ok); background: rgba(74, 222, 128, 0.12); }
 
 .toast {
   position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);

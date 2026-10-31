@@ -63,13 +63,14 @@ export const config = {
       id: 'monthly',
       title: 'Monthly',
       days: 30,
-      priceToman: Number(env.PLAN_MONTHLY_TOMAN || 99000),
+      priceToman: Number(env.PLAN_MONTHLY_TOMAN || 499000),
     },
     {
       id: 'quarterly',
       title: 'Quarterly',
       days: 90,
-      priceToman: Number(env.PLAN_QUARTERLY_TOMAN || 249000),
+      // 399,000 a month: 20% less than three monthly subscriptions.
+      priceToman: Number(env.PLAN_QUARTERLY_TOMAN || 1197000),
     },
   ],
 };
