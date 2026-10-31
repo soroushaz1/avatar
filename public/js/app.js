@@ -580,29 +580,37 @@ async function deleteSaved(id) {
 }
 
 // Characters made in this browser before they could be kept (or by a visitor who logged in later) are
-// added to the account once.
+// added to the account, one at a time and never while a character is being made, so they don't hold up
+// anything on a slow connection. After a failure, no more are tried until the page is opened again.
+let uploadsFailed = false;
+let uploading = false;
 async function uploadLocalCharacters() {
-  if (!state.user) return;
+  if (!state.user || uploading || uploadsFailed) return;
+  uploading = true;
   let added = false;
-  for (const s of state.styles) {
-    const p = state.generated[s.id];
-    if (!p || p.savedId || p.uploading) continue;
-    p.uploading = true;
-    try {
-      const { character } = await api.saveCharacter({
-        style: s.id,
-        mirrored: p.mirrored,
-        image: p.canvas.toDataURL('image/jpeg', 0.9),
-        visemes: Object.entries(p.visemes || {}).map(([id, v]) => ({ id, image: v.canvas.toDataURL('image/jpeg', 0.9) })),
-      });
-      p.savedId = character.id;
-      savePortrait(charKey(s.id), p);
-      added = true;
-    } catch (err) {
-      console.warn('Character could not be added to the account', err);
-    } finally {
-      p.uploading = false;
+  try {
+    for (const s of state.styles) {
+      const p = state.generated[s.id];
+      if (!p || p.savedId) continue;
+      if (state.generating) break; // tried again when it is done
+      try {
+        const { character } = await api.saveCharacter({
+          style: s.id,
+          mirrored: p.mirrored,
+          image: p.canvas.toDataURL('image/jpeg', 0.82),
+          visemes: Object.entries(p.visemes || {}).map(([id, v]) => ({ id, image: v.canvas.toDataURL('image/jpeg', 0.82) })),
+        });
+        p.savedId = character.id;
+        savePortrait(charKey(s.id), p);
+        added = true;
+      } catch (err) {
+        console.warn('Character could not be added to the account', err);
+        uploadsFailed = true;
+        break;
+      }
     }
+  } finally {
+    uploading = false;
   }
   if (added) refreshSaved();
 }
@@ -754,7 +762,8 @@ async function completePhoto() {
 }
 
 // Head-and-shoulders crop around the face (3:4), which is what the character generator works best with.
-function portraitCrop(portrait, maxHeight = 896) {
+// Small enough to upload over slow connections; Gemini needs no more.
+function portraitCrop(portrait, maxHeight = 640) {
   const { canvas, landmarks } = portrait;
   const W = canvas.width, H = canvas.height;
   const xs = landmarks.map((p) => p.x * W), ys = landmarks.map((p) => p.y * H);
@@ -768,7 +777,7 @@ function portraitCrop(portrait, maxHeight = 896) {
   out.width = Math.round(w * s);
   out.height = Math.round(h * s);
   out.getContext('2d').drawImage(canvas, x, y, w, h, 0, 0, out.width, out.height);
-  return out.toDataURL('image/jpeg', 0.9);
+  return out.toDataURL('image/jpeg', 0.85);
 }
 
 async function generateCharacter(style) {
@@ -794,6 +803,7 @@ async function generateCharacter(style) {
   } finally {
     state.generating = null;
     renderStage();
+    uploadLocalCharacters();
   }
 }
 

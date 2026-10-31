@@ -245,6 +245,8 @@ server {
     add_header Strict-Transport-Security "max-age=31536000" always;
 
     client_max_body_size 5m;
+    # Slow connections (uploads are often throttled) get more time between packets of a photo upload.
+    client_body_timeout 120s;
     gzip on;
     gzip_types text/css application/javascript text/javascript application/json application/wasm image/svg+xml;
 
