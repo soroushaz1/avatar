@@ -26,6 +26,16 @@ jobs:
           echo "SSH port: ${SSH_PORT:-22 (default)}"
           [ "$ok" = 1 ]
 
+      - name: Deploy key to authorize on the server
+        run: |
+          umask 077; mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" | tr -d '\r' > ~/.ssh/id_deploy
+          # The public half of SSH_KEY (safe to show): this exact line belongs in ~/.ssh/authorized_keys
+          # of SSH_USER on the server, on a single line.
+          echo "Public key:"
+          ssh-keygen -y -f ~/.ssh/id_deploy | sed 's/$/ github-deploy/'
+          echo "Fingerprint: $(ssh-keygen -y -f ~/.ssh/id_deploy | ssh-keygen -lf - | awk '{ print $2 }')"
+
       - name: Server facts and what it can reach
         run: |
           umask 077; mkdir -p ~/.ssh
