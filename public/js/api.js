@@ -23,6 +23,33 @@ async function request(method, url, body, { timeout = 0 } = {}) {
   return res.json();
 }
 
+// Sends a large JSON body in small pieces and returns the upload's id, which the real request names
+// instead of carrying the body: on some connections a long upload stalls and never arrives, while short
+// requests get through. A piece that fails is sent again, smaller.
+async function upload(payload) {
+  const text = JSON.stringify(payload);
+  const { id } = await request('POST', '/api/uploads', {}, { timeout: 20000 });
+  let size = 32 * 1024;
+  for (let index = 0, offset = 0; offset < text.length; index++) {
+    for (let attempt = 0; ; attempt++) {
+      const part = text.slice(offset, offset + size);
+      try {
+        await request('POST', `/api/uploads/${id}/${index}`, { data: part }, { timeout: 20000 });
+        offset += part.length;
+        break;
+      } catch (err) {
+        if (attempt >= 5 || (err.status >= 400 && err.status !== 408 && err.status !== 429 && err.status < 500)) throw err;
+        size = Math.max(4 * 1024, size >> 1);
+        await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
+      }
+    }
+  }
+  return id;
+}
+
+// A request whose (large) body is uploaded in pieces first.
+const uploading = async (url, payload, timeout) => request('POST', url, { uploadId: await upload(payload) }, { timeout });
+
 export const api = {
   me: () => request('GET', '/api/auth/me'),
   login: (login, password) => request('POST', '/api/auth/login', { login, password }),
@@ -33,13 +60,13 @@ export const api = {
   voices: () => request('GET', '/api/tts/voices'),
   avatarStyles: () => request('GET', '/api/avatar/styles'),
   // Making a character can take a couple of minutes on the server (which gives up after 180 s).
-  generateAvatar: (image, style, mirrored) => request('POST', '/api/avatar/generate', { image, style, mirrored }, { timeout: 200000 }),
+  generateAvatar: (image, style, mirrored) => uploading('/api/avatar/generate', { image, style, mirrored }, 200000),
   // The user's saved 3D characters.
   characters: () => request('GET', '/api/characters'),
-  saveCharacter: (character) => request('POST', '/api/characters', character, { timeout: 180000 }),
+  saveCharacter: (character) => uploading('/api/characters', character, 120000),
   deleteCharacter: (id) => request('DELETE', `/api/characters/${id}`, {}),
-  avatarMouths: (image) => request('POST', '/api/avatar/mouths', { image }, { timeout: 200000 }),
-  completePhoto: (image) => request('POST', '/api/avatar/complete', { image }, { timeout: 180000 }),
+  avatarMouths: (image) => uploading('/api/avatar/mouths', { image }, 200000),
+  completePhoto: (image) => uploading('/api/avatar/complete', { image }, 180000),
   // Speech as { audio (base64), mime, phonemes: [[phoneme, start, duration]] }.
   tts: (text, voice, speed) => request('POST', '/api/tts', { text, voice, speed }),
   ttsDemo: (lang, voice) => request('POST', '/api/tts/demo', { lang, voice }),

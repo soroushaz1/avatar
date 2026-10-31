@@ -8,6 +8,7 @@ import { db, now, isSubscribed } from './db.js';
 import { msg } from './i18n.js';
 import { normalizeLogin } from './auth.js';
 import { saveCharacter } from './characters.js';
+import { uploadedBody } from './uploads.js';
 
 const identity = (who) => `${who} must be instantly recognizable as this exact person: keep the same face shape, \
 skin tone, eye color, eyebrows, nose, lips, hairstyle and hair color, facial hair and similar clothing. Show only \
@@ -167,7 +168,7 @@ avatarRouter.get('/styles', (_req, res) => {
 });
 
 // Photo -> character, plus its mouth shapes (one quota unit).
-avatarRouter.post('/generate', express.json({ limit: '4mb' }), async (req, res) => {
+avatarRouter.post('/generate', express.json({ limit: '4mb' }), uploadedBody, async (req, res) => {
   const style = AVATAR_STYLES[req.body?.style] ? req.body.style : 'animated';
   const photo = parseImage(req.body?.image);
   if (!photo) return res.status(400).json({ error: msg(req, 'bad_photo') });
@@ -187,7 +188,7 @@ avatarRouter.post('/generate', express.json({ limit: '4mb' }), async (req, res) 
 });
 
 // Mouth shapes for a character made before they existed (one quota unit).
-avatarRouter.post('/mouths', express.json({ limit: '4mb' }), async (req, res) => {
+avatarRouter.post('/mouths', express.json({ limit: '4mb' }), uploadedBody, async (req, res) => {
   const character = parseImage(req.body?.image);
   if (!character) return res.status(400).json({ error: msg(req, 'bad_photo') });
   await withQuota(req, res, 'mouths', async () => ({ visemes: await visemeImages(character) }));
@@ -195,7 +196,7 @@ avatarRouter.post('/mouths', express.json({ limit: '4mb' }), async (req, res) =>
 
 // A photo with part of the head cut off, or a tilted head, made complete and straight for the realistic avatar
 // (one quota unit).
-avatarRouter.post('/complete', express.json({ limit: '4mb' }), async (req, res) => {
+avatarRouter.post('/complete', express.json({ limit: '4mb' }), uploadedBody, async (req, res) => {
   const photo = parseImage(req.body?.image);
   if (!photo) return res.status(400).json({ error: msg(req, 'bad_photo') });
   await withQuota(req, res, 'complete', async () => ({

@@ -9,6 +9,7 @@ import { config } from './config.js';
 import { db, now } from './db.js';
 import { requireUser } from './auth.js';
 import { msg } from './i18n.js';
+import { uploadedBody } from './uploads.js';
 
 // Each user keeps their most recent characters; older ones are removed (about 1 MB each).
 const KEEP = 30;
@@ -99,7 +100,7 @@ charactersRouter.get('/', (req, res) => {
 });
 
 // A character made before it could be kept on the server (or by a visitor who logged in later).
-charactersRouter.post('/', express.json({ limit: '12mb' }), async (req, res) => {
+charactersRouter.post('/', express.json({ limit: '12mb' }), uploadedBody, async (req, res) => {
   try {
     const id = await saveCharacter(req.user.id, req.body || {});
     res.json({ character: describe(db.prepare('SELECT * FROM characters WHERE id = ?').get(id)) });
