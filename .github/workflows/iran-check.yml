@@ -60,6 +60,10 @@ jobs:
           check "npm registry" https://registry.npmjs.org/express
           check "PyPI" https://pypi.org/simple/piper-tts/
           check "Hugging Face (voices)" https://huggingface.co/rhasspy/piper-voices/resolve/main/voices.json
+          printf '%-28s %s\n' "Voice file (after redirect)" "$(curl -sL -r 0-1023 -o /dev/null -m 30 -w '%{http_code} %{time_total}s' \
+            https://huggingface.co/rhasspy/piper-voices/resolve/main/fa/fa_IR/amir/medium/fa_IR-amir-medium.onnx 2>/dev/null || echo 'no connection')"
+          check "Node.js downloads" https://nodejs.org/dist/index.json
+          check "NodeSource packages" https://deb.nodesource.com/
           check "GitHub" https://github.com
           check "Let's Encrypt" https://acme-v02.api.letsencrypt.org/directory
           check "ZarinPal" https://payment.zarinpal.com/pg/v4/payment/request.json
@@ -70,6 +74,12 @@ jobs:
             code=$(curl -s -m 20 -o /tmp/gemini.json -w '%{http_code}' -H "x-goog-api-key: $GEMINI_API_KEY" \
               "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1" 2>/dev/null || echo 'no connection')
             echo "HTTP $code: $(python3 -c 'import json; print(json.load(open("/tmp/gemini.json")).get("error", {}).get("message", "OK"))' 2>/dev/null | head -c 200)"
+            rm -f /tmp/gemini.json
+            # Google applies its country restrictions when generating, so try a tiny real request too.
+            code=$(curl -s -m 30 -o /tmp/gemini.json -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+              -H "x-goog-api-key: $GEMINI_API_KEY" -d '{"contents":[{"parts":[{"text":"Reply with the single word OK."}]}]}' \
+              "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent" 2>/dev/null || echo 'no connection')
+            echo "Generate: HTTP $code: $(python3 -c 'import json; j = json.load(open("/tmp/gemini.json")); print(j.get("error", {}).get("message") or j["candidates"][0]["content"]["parts"][0]["text"].strip())' 2>/dev/null | head -c 200)"
             rm -f /tmp/gemini.json
           fi
           EOF
