@@ -355,7 +355,7 @@ a.btn { display: inline-flex; align-items: center; justify-content: center; text
 .tab.active { background: rgba(255, 255, 255, 0.1); color: var(--text); }
 .error { color: var(--danger); font-size: 0.9rem; margin: 0 0 10px; }
 
-.plans { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin: 16px 0 10px; }
+.plans { display: grid; grid-template-columns: repeat(auto-fit, minmax(165px, 1fr)); gap: 12px; margin: 16px 0 10px; }
 .plan {
   border: 1px solid var(--card-border); border-radius: 18px; padding: 16px;
   background: rgba(255, 255, 255, 0.04);

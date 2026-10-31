@@ -60,6 +60,13 @@ export const config = {
   // Prices are in Toman; the gateway is called in Rial (×10).
   plans: [
     {
+      // A cheaper way to try it.
+      id: 'weekly',
+      title: 'Weekly',
+      days: 7,
+      priceToman: Number(env.PLAN_WEEKLY_TOMAN || 149000),
+    },
+    {
       id: 'monthly',
       title: 'Monthly',
       days: 30,

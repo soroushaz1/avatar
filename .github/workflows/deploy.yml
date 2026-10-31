@@ -2,7 +2,7 @@ name: Deploy
 
 # Ships the app to the server over SSH and runs deploy/install.sh there.
 # Secrets: SSH_HOST, SSH_USER, SSH_KEY, ZARINPAL_MERCHANT_ID, GEMINI_API_KEY.
-# Optional repository variables: DOMAIN, ZARINPAL_SANDBOX, GEMINI_IMAGE_MODEL, PLAN_MONTHLY_TOMAN,
+# Optional repository variables: DOMAIN, ZARINPAL_SANDBOX, GEMINI_IMAGE_MODEL, PLAN_WEEKLY_TOMAN, PLAN_MONTHLY_TOMAN,
 # PLAN_QUARTERLY_TOMAN, AVATAR_DAILY_LIMIT, AVATAR_FREE_LIMIT, AVATAR_SUBSCRIBER_LIMIT.
 # Manual for now (Actions > Deploy > Run workflow); can be switched to run on every push to main later.
 on:
@@ -36,6 +36,7 @@ jobs:
           ZARINPAL_SANDBOX: ${{ vars.ZARINPAL_SANDBOX }}
           GEMINI_IMAGE_MODEL: ${{ vars.GEMINI_IMAGE_MODEL }}
           GEMINI_TTS_MODEL: ${{ vars.GEMINI_TTS_MODEL }}
+          PLAN_WEEKLY_TOMAN: ${{ vars.PLAN_WEEKLY_TOMAN }}
           PLAN_MONTHLY_TOMAN: ${{ vars.PLAN_MONTHLY_TOMAN }}
           PLAN_QUARTERLY_TOMAN: ${{ vars.PLAN_QUARTERLY_TOMAN }}
           AVATAR_DAILY_LIMIT: ${{ vars.AVATAR_DAILY_LIMIT }}
@@ -47,7 +48,7 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "$SSH_KEY" | tr -d '\r' > ~/.ssh/id_deploy
           # Settings file copied to the server (never printed); values are shell-quoted.
-          for v in DOMAIN ZARINPAL_MERCHANT_ID GEMINI_API_KEY ZARINPAL_SANDBOX GEMINI_IMAGE_MODEL GEMINI_TTS_MODEL PLAN_MONTHLY_TOMAN \
+          for v in DOMAIN ZARINPAL_MERCHANT_ID GEMINI_API_KEY ZARINPAL_SANDBOX GEMINI_IMAGE_MODEL GEMINI_TTS_MODEL PLAN_WEEKLY_TOMAN PLAN_MONTHLY_TOMAN \
                    PLAN_QUARTERLY_TOMAN AVATAR_DAILY_LIMIT AVATAR_FREE_LIMIT AVATAR_SUBSCRIBER_LIMIT AVATAR_UNLIMITED_LOGINS; do
             val=$(printf '%s' "${!v}" | tr -d '\r\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             [ -n "$val" ] && printf "%s=%q\n" "$v" "$val"
